@@ -244,6 +244,16 @@ def create_edit_entry(request, entry_id=None):
     })
 
 
+@permission_required('entries.change_entry')
+def bulk_entry(request, user=None):
+    if user is None:
+        user = request.user
+        
+    return render(request, 'timepiece/entry/create_edit.html', {
+        'form': form,
+        'entry': entry,
+    })
+
 @permission_required('entries.view_payroll_summary')
 def reject_entry(request, entry_id):
     """
