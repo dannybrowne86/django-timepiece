@@ -116,11 +116,14 @@ class AddUpdateEntryForm(forms.ModelForm):
     start_time = forms.DateTimeField(widget=TimepieceSplitDateTimeWidget(),
             required=True)
     end_time = forms.DateTimeField(widget=TimepieceSplitDateTimeWidget())
+    hours_paused = forms.FloatField(required=False, label='Hours Paused')
 
     class Meta:
         model = Entry
         exclude = ('user', 'pause_time', 'site', 'hours', 'status',
-                   'entry_group')
+                   'entry_group', 'seconds_paused')
+        fields = ('project', 'activity', 'location', 'start_time',
+                  'end_time', 'hours_paused', 'comments')
 
     def __init__(self, *args, **kwargs):
         self.user = kwargs.pop('user')
@@ -151,7 +154,16 @@ class AddUpdateEntryForm(forms.ModelForm):
                             'activity': active.activity,
                             'start_time': active.start_time.strftime('%H:%M:%S'),
                         }))
+        if self.cleaned_data.get('hours_paused', 0) < 0:
+            raise forms.ValidationError('The hours paused must be >= 0.')
         return self.cleaned_data
+
+    def save(self, commit=True):
+        entry = super(AddUpdateEntryForm, self).save(commit=False)
+        entry.seconds_paused = int(self.cleaned_data.get('hours_paused', 0) * 3600)
+        if commit:
+            entry.save()
+        return entry
 
 
 class ProjectHoursForm(forms.ModelForm):
@@ -161,9 +173,9 @@ class ProjectHoursForm(forms.ModelForm):
 
 
 class ProjectHoursSearchForm(forms.Form):
-    week_start = forms.DateField(label='Week of', required=False,
+    week_start = forms.DateField(label='Enter Date: ', required=False,
             input_formats=INPUT_FORMATS, widget=TimepieceDateInput())
 
     def clean_week_start(self):
         week_start = self.cleaned_data.get('week_start', None)
-        return utils.get_week_start(week_start, False) if week_start else None
+        return utils.get_period_start(week_start, False) if week_start else None

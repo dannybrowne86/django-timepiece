@@ -115,8 +115,8 @@ def view_user_timesheet(request, user_id, active_tab):
             'id', 'location__name', 'project__name', 'activity__name',
             'status')
     month_entries = month_qs.date_trunc('month', extra_values)
-    # For grouped entries, back date up to the start of the week.
-    first_week = utils.get_week_start(from_date)
+    # For grouped entries, back date up to the start of the period.
+    first_week = utils.get_period_start(from_date)
     month_week = first_week + relativedelta(weeks=1)
     grouped_qs = entries_qs.timespan(first_week, to_date=to_date)
     intersection = grouped_qs.filter(start_time__lt=month_week,
@@ -146,7 +146,12 @@ def view_user_timesheet(request, user_id, active_tab):
     if can_approve:
         show_approve = verified_count + approved_count == total_statuses \
                 and verified_count > 0 and total_statuses != 0
-
+    
+    # TODO: for some reason I have to loop over this in order to
+    # remedy an error... does not make any sense
+    for gt in totals:
+        gt = gt
+    
     return render(request, 'timepiece/user/timesheet/view.html', {
         'active_tab': active_tab or 'overview',
         'year_month_form': form,

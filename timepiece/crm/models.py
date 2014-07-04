@@ -103,7 +103,10 @@ class Business(models.Model):
         return reverse('view_business', args=(self.pk,))
 
     def get_display_name(self):
-        return self.short_name or self.name
+        if self.short_name:
+            return '%s: %s' % (self.short_name, self.name)
+        else:
+            return self.name
 
 
 class TrackableProjectManager(models.Manager):
@@ -117,11 +120,28 @@ class TrackableProjectManager(models.Manager):
 
 class Project(models.Model):
     name = models.CharField(max_length=255)
+    code = models.CharField(max_length=12,
+        verbose_name="Project Code",
+        unique=False,
+        help_text="Auto-generated project code for tracking.")
     tracker_url = models.CharField(max_length=255, blank=True, null=False,
-            default="")
+            default="", verbose_name="Wiki Url")
     business = models.ForeignKey(Business,
+            verbose_name="Company",
             related_name='new_business_projects')
-    point_person = models.ForeignKey(User, limit_choices_to={'is_staff': True})
+    point_person = models.ForeignKey(User,
+        verbose_name="Minder",
+        related_name="minder",
+        limit_choices_to={'is_staff': True},
+        help_text="Who is the Project Manager?")
+    finder = models.ForeignKey(User,
+        limit_choices_to={'is_staff': True},
+        related_name="finder",
+        help_text="Who brought in this project?")
+    binder =models.ForeignKey(User,
+        limit_choices_to={'is_staff': True},
+        related_name="binder",
+        help_text="Who is responsible for project/customer follow-up?")
     users = models.ManyToManyField(User, related_name='user_projects',
             through='ProjectRelationship')
     activity_group = models.ForeignKey('entries.ActivityGroup',
@@ -150,7 +170,7 @@ class Project(models.Model):
         )
 
     def __unicode__(self):
-        return '{0} ({1})'.format(self.name, self.business.get_display_name())
+        return '{0} {1}'.format(self.code, self.name)
 
     @property
     def billable(self):
