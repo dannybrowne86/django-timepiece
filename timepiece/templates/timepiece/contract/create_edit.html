@@ -1,4 +1,4 @@
-{% extends "timepiece/project/milestone/activity_goal/base.html" %}
+{% extends "timepiece/contract/base.html" %}
 {% load url from future %}
 {% load bootstrap_toolkit %}
 
@@ -7,23 +7,23 @@
     <li>
         <span class="divider">/</span>
         {% if not object %}
-            <a href="">Create Activity Goal</a>
+            <a href="{% url 'create_contract' %}">Create Contract</a>
         {% else %}
-            <a href="{% url 'edit_activity_goal' object.milestone.project.id object.milestone.id object.pk %}">Edit Activity Goal</a>
+            <a href="{% url 'edit_contract' object.pk %}">Edit Contract</a>
         {% endif %}
     </li>
 {% endblock crumbs %}
 
-{% block title %}{% if not object %}Create {% else %}Edit {% endif %}Activity Goal{% endblock title %}
+{% block title %}{% if not object %}Create Contract{% else %}Edit {{ object }}{% endif %}{% endblock title %}
 
 {% block content %}
     <div class="row-fluid">
         <div class="span12">
-            <h2>{% if not object %}Create {% else %}Edit {% endif %}Activity Goal</h2>
+            <h2>{% if not object %}Create Contract{% if contract %} for {{ contract }}{% endif %}{% else %}Edit {{ object }}{% endif %}</h2>
 
             <br style="clear: both;" />
 
-            <form id="create-edit-project" class="form-horizontal" action="" method="post" accept-charset="utf-8">
+            <form id="create-edit-contract" class="form-horizontal" action="" method="post" accept-charset="utf-8">
                 {% csrf_token %}
                 {{ form|as_bootstrap:"horizontal" }}
                 <div class="form-actions">

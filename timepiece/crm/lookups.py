@@ -7,21 +7,33 @@ from selectable.base import LookupBase
 from selectable.base import ModelLookup
 from selectable.registry import registry
 
-from timepiece.crm.models import Project, Business
+from timepiece.crm.models import Project, Business, Contact
+from timepiece.entries.models import Activity
 
 
 class ProjectLookup(ModelLookup):
     model = Project
-    search_fields = ('name__icontains', 'business__name__icontains',
-            'business__short_name__icontains')
+    search_fields = ('name__icontains', 'code__icontains',
+        'business__name__icontains', 'business__short_name__icontains')
 
     def get_item_label(self, project):
         return mark_safe(u'<span class="project">%s</span>' %
                 self.get_item_value(project))
 
     def get_item_value(self, project):
-        return project.name if project else ''
+        # return str(project) if project else ''
+        return '%s: %s' % (project.code, project.name) if project else ''
 
+class ProjectCodeLookup(ModelLookup):
+    model = Project
+    search_fields = ('code__icontains', )
+
+    def get_item_label(self, project):
+        return mark_safe(u'<span class="project">%s</span>' %
+                self.get_item_value(project))
+
+    def get_item_value(self, project):
+        return '%s: %s' % (project.code, project.name) if project else ''
 
 class BusinessLookup(ModelLookup):
     model = Business
@@ -49,6 +61,19 @@ class UserLookup(ModelLookup):
 
     def get_item_value(self, user):
         return user.get_name_or_username() if user else ''
+
+
+class ActivityLookup(ModelLookup):
+    model = Activity
+    search_fields = ('name__icontains', 'code__icontains')
+
+    def get_item_label(self, activity):
+        return mark_safe(u'<span class="project">%s</span>' %
+                self.get_item_value(activity))
+
+    def get_item_value(self, activity):
+        # return str(project) if project else ''
+        return '%s: %s' % (activity.code, activity.name) if activity else ''
 
 
 class QuickLookup(LookupBase):
@@ -91,7 +116,25 @@ class QuickLookup(LookupBase):
         return item.value if item else ''
 
 
+class ContactLookup(ModelLookup):
+    model = Contact
+    search_fields = ('first_name__icontains', 'last_name__icontains',
+        'email__icontains', 'business__name__icontains')
+
+    def get_query(self, request, q):
+        return super(ContactLookup, self).get_query(request, q).order_by('last_name')
+
+    def get_item_label(self, contact):
+        return mark_safe(u'<span class="user">%s</span>' %
+                self.get_item_value(contact))
+
+    def get_item_value(self, contact):
+        return str(contact)
+
 registry.register(BusinessLookup)
 registry.register(ProjectLookup)
+registry.register(ProjectCodeLookup)
 registry.register(UserLookup)
 registry.register(QuickLookup)
+registry.register(ContactLookup)
+registry.register(ActivityLookup)

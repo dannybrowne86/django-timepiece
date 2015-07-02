@@ -48,7 +48,7 @@ class Migration(SchemaMigration):
             ('tracker_url', self.gf('django.db.models.fields.CharField')(default='', max_length=255, blank=True)),
             ('business', self.gf('django.db.models.fields.related.ForeignKey')(related_name='new_business_projects', to=orm['crm.Business'])),
             ('point_person', self.gf('django.db.models.fields.related.ForeignKey')(to=orm['auth.User'])),
-            # ('activity_group', self.gf('django.db.models.fields.related.ForeignKey')(blank=True, related_name='activity_group', null=True, to=orm['entries.ActivityGroup'])),
+            #('activity_group', self.gf('django.db.models.fields.related.ForeignKey')(blank=True, related_name='activity_group', null=True, to=orm['entries.ActivityGroup'])),
             ('type', self.gf('django.db.models.fields.related.ForeignKey')(related_name='projects_with_type', to=orm['crm.Attribute'])),
             ('status', self.gf('django.db.models.fields.related.ForeignKey')(related_name='projects_with_status', to=orm['crm.Attribute'])),
             ('description', self.gf('django.db.models.fields.TextField')()),

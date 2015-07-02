@@ -9,11 +9,16 @@ from timepiece.utils.search import SearchForm
 from timepiece.utils import get_setting
 
 from timepiece.crm.lookups import (BusinessLookup, ProjectLookup, UserLookup,
-        QuickLookup)
+        QuickLookup, ContactLookup)
 from timepiece.crm.models import (Attribute, Business, Project,
         ProjectRelationship, UserProfile, PaidTimeOffRequest, 
         PaidTimeOffLog, Milestone, ActivityGoal, BusinessNote,
-        BusinessDepartment, Contact, ContactNote)
+        BusinessDepartment, Contact, ContactNote, Lead, LeadNote,
+        DistinguishingValueChallenge, TemplateDifferentiatingValue,
+        DVCostItem, Opportunity, LeadAttachment, LimitedAccessUserProfile)
+from timepiece.fields import WeeklyScheduleWidget
+
+import datetime
 
 
 class CreateEditBusinessForm(forms.ModelForm):
@@ -36,6 +41,13 @@ class CreateEditBusinessForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):        
         super(CreateEditBusinessForm, self).__init__(*args, **kwargs)
         self.fields['account_owner'].choices = self.EMPLOYEE_CHOICES
+
+    def clean_short_name(self):
+        short_name = self.cleaned_data['short_name']
+        if len(short_name) == 0:
+            raise forms.ValidationError("A Short Name is required.")
+
+        return short_name
 
 class CreateEditBusinessDepartmentForm(forms.ModelForm):
 
@@ -107,6 +119,9 @@ class CreateUserForm(UserCreationForm):
     pto_accrual = forms.FloatField(initial=0.0, label='PTO Accrual Amount', help_text='Number of PTO hours earned per pay period for the employee.')
     employee_type = forms.ChoiceField(choices=UserProfile.EMPLOYEE_TYPES.items())
 
+    utilization = forms.FloatField(help_text='The percentage of time the employee should spend on billable work as opposed to non-billable work.')
+    weekly_schedule = forms.CharField(widget=WeeklyScheduleWidget)
+
     class Meta:
         model = User
         fields = ('username', 'first_name', 'last_name', 'email', 'is_active',
@@ -125,6 +140,8 @@ class CreateUserForm(UserCreationForm):
                          earns_pto=self.cleaned_data['earns_pto'],
                          earns_holiday_pay=self.cleaned_data['earns_holiday_pay'],
                          pto_accrual=self.cleaned_data['pto_accrual'],
+                         utilization=self.cleaned_data['utilization'],
+                         weekly_schedule=self.cleaned_data.get('weekly_schedule'),
                          employee_type=self.cleaned_data['employee_type'])
         if commit:
             self.save_m2m()
@@ -157,6 +174,9 @@ class EditUserForm(UserChangeForm):
     pto_accrual = forms.FloatField(initial=0.0, label='PTO Accrual Amount', help_text='Number of PTO hours earned per pay period for the employee.')
     employee_type = forms.ChoiceField(choices=UserProfile.EMPLOYEE_TYPES.items())
 
+    utilization = forms.FloatField(help_text='The percentage of time the employee should spend on billable work as opposed to non-billable work.')
+    weekly_schedule = forms.CharField(widget=WeeklyScheduleWidget)
+
     class Meta:
         model = User
         fields = ('username', 'first_name', 'last_name', 'email', 'is_active',
@@ -164,8 +184,10 @@ class EditUserForm(UserChangeForm):
 
     def __init__(self, *args, **kwargs):
         super(EditUserForm, self).__init__(*args, **kwargs)
-        self.fields['groups'].widget = forms.CheckboxSelectMultiple()
-        self.fields['groups'].help_text = None
+        # self.fields['groups'].widget = forms.CheckboxSelectMultiple()
+        # for some reason, when we use the CheckboxSelectMultiple it
+        # will check some groups whih the user does not belong to
+        # self.fields['groups'].help_text = None
         up = UserProfile.objects.get(user=kwargs['instance'])
         self.fields['business'].initial = up.business
         self.fields['hire_date'].initial = up.hire_date
@@ -173,6 +195,8 @@ class EditUserForm(UserChangeForm):
         self.fields['earns_holiday_pay'].initial = up.earns_holiday_pay
         self.fields['pto_accrual'].initial = up.pto_accrual
         self.fields['employee_type'].initial = up.employee_type
+        self.fields['utilization'].initial = up.utilization
+        self.fields['weekly_schedule'].initial = up.weekly_schedule
         # In 1.4 this field is created even if it is excluded in Meta.
         if 'password' in self.fields:
             del(self.fields['password'])
@@ -196,6 +220,8 @@ class EditUserForm(UserChangeForm):
         up.earns_holiday_pay = self.cleaned_data['earns_holiday_pay']
         up.pto_accrual = self.cleaned_data['pto_accrual']
         up.employee_type = self.cleaned_data['employee_type']
+        up.utilization = self.cleaned_data['utilization']
+        up.weekly_schedule = self.cleaned_data.get('weekly_schedule')
 
         if password1:
             instance.set_password(password1)
@@ -205,6 +231,23 @@ class EditUserForm(UserChangeForm):
             self.save_m2m()
         return instance
 
+
+class EditLimitedUserProfileForm(forms.ModelForm):
+
+    class Meta:
+        model = LimitedAccessUserProfile
+
+    def clean(self):
+        cleaned_data = super(EditLimitedUserProfileForm, self).clean()
+        
+        bday = cleaned_data.get('birthday_celebration', False)
+        bday_month = cleaned_data.get('birthday_month', None)
+        
+        if bday and bday_month is None:
+            self._errors['birthday_month'] = self.error_class(
+                ['You must select a birthday month if you select the Birthday Celebration checkbox.'])
+
+        return cleaned_data
 
 class EditUserSettingsForm(forms.ModelForm):
 
@@ -263,6 +306,13 @@ class SelectUserForm(forms.Form):
     def get_user(self):
         return self.cleaned_data['user'] if self.is_valid() else None
 
+class SelectContactForm(forms.Form):
+    user = selectable.AutoCompleteSelectField(ContactLookup, label='')
+    user.widget.attrs['placeholder'] = 'Add Contact'
+
+    def get_contact(self):
+        return self.cleaned_data['user'] if self.is_valid() else None
+
 class ApproveDenyPTORequestForm(forms.ModelForm):
 
     class Meta:
@@ -279,12 +329,13 @@ class CreateEditPaidTimeOffLog(forms.ModelForm):
 
     class Meta:
         model = PaidTimeOffLog
-        fields = ('user_profile', 'date', 'amount', 'comment', )
+        fields = ('user_profile', 'date', 'amount', 'comment', 'pto')
 
     def __init__(self, *args, **kwargs):
         super(CreateEditPaidTimeOffLog, self).__init__(*args, **kwargs)
         self.fields['user_profile'].label = 'Employee'
-        up_choices = [(u.id, '%s, %s'%(u.last_name, u.first_name)) for u in Group.objects.get(id=1
+        self.fields['pto'].label = 'PTO'
+        up_choices = [(u.profile.id, '%s, %s'%(u.last_name, u.first_name)) for u in Group.objects.get(id=1
             ).user_set.filter(is_active=True).order_by('last_name', 'first_name')]
         # up_choices.insert(0, ('', '-'))
         self.fields['user_profile'].choices = up_choices
@@ -296,19 +347,22 @@ class CreateEditMilestoneForm(forms.ModelForm):
         fields = ('name', 'due_date', 'description')
 
 class CreateEditActivityGoalForm(forms.ModelForm):
-    EMPLOYEE_CHOICES = [(u.pk, '%s, %s'%(u.last_name, u.first_name)) \
-        for u in Group.objects.get(id=1).user_set.filter(
-            is_active=True).order_by('last_name')]
 
     class Meta:
         model = ActivityGoal
-        fields = ('goal_hours', 'employee', 'activity', 'date')
+        fields = ('goal_hours', 'employee', 'activity', 'date', 'end_date')
 
     def __init__(self, *args, **kwargs):
         super(CreateEditActivityGoalForm, self).__init__(*args, **kwargs)
-        if self.EMPLOYEE_CHOICES[0][1] != '-':
-            self.EMPLOYEE_CHOICES.insert(0, ('', '-'))
-        self.fields['employee'].choices = self.EMPLOYEE_CHOICES
+        self.fields['date'].initial = datetime.date.today()
+        self.fields['date'].required = True
+        self.fields['activity'].required = True
+
+    def clean_goal_hours(self):
+        goal_hours = self.cleaned_data['goal_hours']
+        if goal_hours <= 0:
+            raise forms.ValidationError("Goal Hours must be greater than 0.")
+        return goal_hours
 
 class CreateEditContactForm(forms.ModelForm):
     EMPLOYEE_CHOICES = [(None, '-')] + [(u.pk, '%s, %s'%(u.last_name, u.first_name)) \
@@ -345,3 +399,94 @@ class AddContactNoteForm(forms.ModelForm):
         self.fields['text'].widget.attrs['rows'] = 6
         self.fields['author'].widget = widgets.HiddenInput()
         self.fields['contact'].widget = widgets.HiddenInput()
+
+class CreateEditLeadForm(forms.ModelForm):
+    EMPLOYEE_CHOICES = [(None, '-')] + [(u.pk, '%s, %s'%(u.last_name, u.first_name)) \
+        for u in Group.objects.get(id=1).user_set.filter(
+            is_active=True).order_by('last_name', 'first_name')]
+
+    class Meta:
+        model = Lead
+        fields = ('title', 'status', 'lead_source', 'aac_poc',
+            'primary_contact', 'business_placeholder',
+            'created_by', 'last_editor')
+
+    def __init__(self, *args, **kwargs):        
+        super(CreateEditLeadForm, self).__init__(*args, **kwargs)
+        self.fields['aac_poc'].choices = self.EMPLOYEE_CHOICES
+        self.fields['lead_source'].choices = self.EMPLOYEE_CHOICES
+        self.fields['created_by'].widget = widgets.HiddenInput()
+        self.fields['last_editor'].widget = widgets.HiddenInput()
+
+        self.fields['primary_contact'].widget = selectable.AutoCompleteSelectWidget(ContactLookup)
+        self.fields['primary_contact'].widget.attrs['placeholder'] = 'Find Contact'
+        self.fields['business_placeholder'].widget = selectable.AutoCompleteSelectWidget(BusinessLookup)
+        self.fields['business_placeholder'].widget.attrs['placeholder'] = 'Find Business'
+
+    def clean(self):
+        super(CreateEditLeadForm, self).clean()
+        primary_contact = self.cleaned_data.get('primary_contact', None)
+        business = self.cleaned_data.get('business_placeholder', None)
+        if primary_contact is None and business is None:
+            raise forms.ValidationError('You must select either a Primary Contact (preferred) or a Business.')
+        return self.cleaned_data
+
+class AddLeadNoteForm(forms.ModelForm):
+
+    class Meta:
+        model = LeadNote
+        fields = ('text', 'lead', 'author')
+
+    def __init__(self, *args, **kwargs):
+        super(AddLeadNoteForm, self).__init__(*args, **kwargs)
+        self.fields['text'].label = ''
+        self.fields['text'].widget.attrs['rows'] = 6
+        self.fields['author'].widget = widgets.HiddenInput()
+        self.fields['lead'].widget = widgets.HiddenInput()
+
+class AddDistinguishingValueChallenegeForm(forms.ModelForm):
+
+    class Meta:
+        model = DistinguishingValueChallenge
+        fields = ('probing_question', 'order', 'short_name', 'description', 
+            'longevity', 'start_date', 'steps', 'results', 'due', 
+            'due_date', 'cost', 'confirm_resources', 'resources_notes', 
+            'benefits_begin', 'date_benefits_begin', 'confirm', 
+            'confirm_notes', 'commitment', 'commitment_notes', 'closed')
+
+
+class AddTemplateDifferentiatingValuesForm(forms.Form):
+    template_dvs = forms.MultipleChoiceField(
+        required=True, widget=forms.CheckboxSelectMultiple,
+        label='Select at least one Template Differenitating Values')
+
+    def __init__(self, *args, **kwargs):
+        super(AddTemplateDifferentiatingValuesForm, self).__init__(*args, **kwargs)
+        TEMPLATE_DV_CHOICES = [(tdv.id, '%s: %s' % (tdv.short_name, 
+            tdv.probing_question)) for tdv in 
+            TemplateDifferentiatingValue.objects.all()]
+        self.fields['template_dvs'].choices = TEMPLATE_DV_CHOICES
+
+class CreateEditTemplateDVForm(forms.ModelForm):
+
+    class Meta:
+        model = TemplateDifferentiatingValue
+        fields = ('short_name', 'probing_question')
+
+class CreateEditDVCostItem(forms.ModelForm):
+
+    class Meta:
+        model = DVCostItem
+        fields = ('dv', 'description', 'details', 'cost', 'man_hours', 'rate')
+
+class CreateEditOpportunity(forms.ModelForm):
+    # project = selectable.AutoCompleteSelectField(ProjectLookup, required=False)
+    class Meta:
+        model = Opportunity
+        fields = ('title', 'lead', 'differentiating_value', 'proposal',
+            'proposal_status', 'project')
+
+    def __init__(self, *args, **kwargs):
+        super(CreateEditOpportunity, self).__init__(*args, **kwargs)
+        self.fields['lead'].widget = widgets.HiddenInput()
+        self.fields['project'].widget = selectable.widgets.AutoCompleteSelectMultipleWidget(ProjectLookup)

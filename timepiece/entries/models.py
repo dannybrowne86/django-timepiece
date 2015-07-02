@@ -11,7 +11,7 @@ from django.utils import timezone
 from timepiece import utils
 from timepiece.crm.models import Project, PaidTimeOffLog
 
-
+import sys, traceback
 class Activity(models.Model):
     """
     Represents different types of activity: debugging, developing,
@@ -189,14 +189,20 @@ class Entry(models.Model):
 
     hours = models.DecimalField(max_digits=8, decimal_places=2, default=0)
 
-    pto_log = models.ForeignKey(PaidTimeOffLog, blank=True, null=True)
+    pto_log = models.ForeignKey(PaidTimeOffLog, blank=True, null=True,
+        on_delete=models.CASCADE)
 
     mechanism = models.CharField(max_length=24, choices=MECHANISMS.items(),
             default=MANUAL)
 
-    writedown_user = models.ForeignKey(User, related_name='writedown_user', null=True, blank=True)
-    writedown = models.BooleanField(default=False, help_text='Select this if the entry is a writedown for another entry.')
-    writedown_entry = models.ForeignKey('self', blank=True, null=True, help_text='If this is a writedown, select the entry being written-down.')
+    writedown_user = models.ForeignKey(
+        User, related_name='writedown_user', null=True, blank=True,
+        on_delete=models.SET_NULL)
+    writedown = models.BooleanField(default=False, 
+        help_text='Select this if the entry is a writedown for another entry.')
+    writedown_entry = models.ForeignKey('self', blank=True, null=True, 
+        help_text='If this is a writedown, select the entry being written-down.',
+        on_delete=models.SET_NULL)
 
     objects = EntryManager()
     worked = EntryWorkedManager()
@@ -368,8 +374,10 @@ class Entry(models.Model):
         (period_start, period_end) = utils.get_bimonthly_dates(start)
         entries = self.user.timepiece_entries.filter(
             Q(status=Entry.APPROVED) | Q(status=Entry.INVOICED),
-            start_time__gte=period_start,
-            end_time__lt=period_end
+            #start_time__gte=period_start,
+            #end_time__lt=period_end
+            start_time__gte=start,
+            project=self.project
         )
         if ( (entries.exists() and not self.id)
                 or (self.id and (self.status == Entry.INVOICED or self.status == Entry.APPROVED)) ):
@@ -386,8 +394,29 @@ class Entry(models.Model):
         self.hours = Decimal('%.2f' % round(self.total_hours, 2))
         if self.writedown:
             self.hours = -1 * self.hours
+
+        if self.pto_log:
+            original_amount = self.pto_log.amount
+            self.pto_log.amount = -1 * self.hours
+            if original_amount != self.pto_log.amount:
+                self.pto_log.save()
+                if self.pto_log.pto_request.status == 'approved' or self.pto_log.pto_request.status == 'processed':
+                    self.pto_log.pto_request.status = 'modified'
+                    self.pto_log.pto_request.save()
+            # if abs(self.pto_log.amount) > abs(orignal_amount) and self.user.get_pto < Decimal('0.0'):
+            #     self.pto_log = original_amount
+            #     self.pto_log.save()
+            #     msg = 'You cannot '
+            #     raise ValidationError(msg)
+
         
         super(Entry, self).save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # if it exists, delete the associated PTO Log
+        if self.pto_log:
+            self.pto_log.delete()
+        super(Entry, self).delete(*args, **kwargs) # Call the "real" delete() method.
 
     def get_total_seconds(self):
         """
@@ -520,17 +549,22 @@ class Entry(models.Model):
         data = {
             'billable': Decimal('0'), 'non_billable': Decimal('0'),
             'invoiced': Decimal('0'), 'uninvoiced': Decimal('0'),
-            'total': Decimal('0')
+            'total': Decimal('0'), 'unpaid': Decimal('0')
             }
         invoiced = entries.filter(
             status=Entry.INVOICED).aggregate(i=Sum('hours'))['i']
         uninvoiced = entries.exclude(
             status=Entry.INVOICED).aggregate(uninv=Sum('hours'))['uninv']
+        unpaid = entries.filter(
+            project__in=utils.get_setting('TIMEPIECE_UNPAID_LEAVE_PROJECTS').values()
+            ).aggregate(unpaid=Sum('hours'))['unpaid']
         total = entries.aggregate(s=Sum('hours'))['s']
         if invoiced:
             data['invoiced'] = invoiced
         if uninvoiced:
             data['uninvoiced'] = uninvoiced
+        if unpaid:
+            data['unpaid'] = unpaid
         if total:
             data['total'] = total
         billable = entries.exclude(project__in=projects.values())

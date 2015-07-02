@@ -7,6 +7,10 @@ urlpatterns = patterns('',
         views.HourlyReport.as_view(),
         name='report_hourly'),
 
+    url(r'^reports/revenue/$',
+        views.RevenueReport.as_view(),
+        name='report_revenue'),
+
     url(r'^reports/writedowns/$',
         views.WritedownReport.as_view(),
         name='report_writedowns'),
@@ -27,13 +31,24 @@ urlpatterns = patterns('',
         views.report_estimation_accuracy,
         name='report_estimation_accuracy'),
 
-    url(r'^reports/backlog/$',
-        views.report_backlog,
+    # url(r'^reports/backlog/(?:(?P<active_tab>company|individual-summary|individual-details)/)?$',
+    #     views.report_backlog,
+    #     name='report_backlog'),
+    url(r'^reports/backlog/(?:(?P<active_tab>company|company-coverage|individual-summary|individual-details)/)?$',
+        views.BacklogReport.as_view(),
         name='report_backlog'),
 
-    url(r'^reports/backlog/(?P<user_id>\d+)/$',
+    url(r'^reports/backlog/activity/(?P<activity_id>\d+)/$',
+        views.report_activity_backlog,
+        name='report_activity_backlog'),
+
+    url(r'^reports/backlog/user/(?P<user_id>\d+)/$',
         views.report_employee_backlog,
         name='report_employee_backlog'),
+
+    url(r'^reports/backlog/user/(?P<user_id>\d+)/chart_data/$',
+        views.employee_backlog_chart_data,
+        name='employee_backlog_chart_data'),
 
     url(r'^reports/active_project_burnup_charts/$',
         views.active_projects_burnup_charts,

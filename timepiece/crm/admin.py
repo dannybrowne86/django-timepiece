@@ -3,7 +3,9 @@ from django.contrib import admin
 from timepiece.crm.models import (Attribute, Business, Project,
         RelationshipType, UserProfile, PaidTimeOffRequest,
         PaidTimeOffLog, Milestone, ActivityGoal,
-        Contact, ContactNote, BusinessNote)
+        Contact, ContactNote, BusinessNote, BusinessAttachment,
+        Lead, LeadNote, DistinguishingValueChallenge, 
+        TemplateDifferentiatingValue, DVCostItem)
 
 
 class AttributeAdmin(admin.ModelAdmin):
@@ -20,6 +22,8 @@ class BusinessAdmin(admin.ModelAdmin):
 class BusinessNoteAdmin(admin.ModelAdmin):
     pass
 
+class BusinessAttachmentAdmin(admin.ModelAdmin):
+    pass
 
 class ProjectAdmin(admin.ModelAdmin):
     raw_id_fields = ('business',)
@@ -33,6 +37,12 @@ class ContactAdmin(admin.ModelAdmin):
     pass
 
 class ContactNoteAdmin(admin.ModelAdmin):
+    pass
+
+class LeadAdmin(admin.ModelAdmin):
+    pass
+
+class LeadNoteAdmin(admin.ModelAdmin):
     pass
 
 class RelationshipTypeAdmin(admin.ModelAdmin):
@@ -58,6 +68,7 @@ class UserProfileAdmin(admin.ModelAdmin):
 admin.site.register(Attribute, AttributeAdmin)
 admin.site.register(Business, BusinessAdmin)
 admin.site.register(BusinessNote, BusinessNoteAdmin)
+admin.site.register(BusinessAttachment, BusinessAttachmentAdmin)
 admin.site.register(Project, ProjectAdmin)
 admin.site.register(RelationshipType, RelationshipTypeAdmin)
 admin.site.register(UserProfile, UserProfileAdmin)
@@ -67,3 +78,8 @@ admin.site.register(Milestone, MilestoneAdmin)
 admin.site.register(ActivityGoal, ActivityGoalAdmin)
 admin.site.register(Contact, ContactAdmin)
 admin.site.register(ContactNote, ContactNoteAdmin)
+admin.site.register(Lead, LeadAdmin)
+admin.site.register(LeadNote, LeadNoteAdmin)
+admin.site.register(DistinguishingValueChallenge)
+admin.site.register(TemplateDifferentiatingValue)
+admin.site.register(DVCostItem)

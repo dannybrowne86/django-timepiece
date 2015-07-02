@@ -7,19 +7,21 @@ import os
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User, Group
 from django.core.urlresolvers import reverse, reverse_lazy
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.db.models import Sum, Q
 from django.http import HttpResponseRedirect, HttpResponseForbidden, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, render, redirect
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import (CreateView, DeleteView, DetailView,
-        UpdateView, FormView, View)
+        UpdateView, FormView, View, TemplateView)
 from django.forms import widgets
 
 from timepiece import utils
-from timepiece.forms import YearMonthForm, UserYearMonthForm
+from timepiece.forms import (YearMonthForm, UserYearMonthForm, DateForm,
+    UserDateForm, StatusUserDateForm, StatusDateForm)
 from timepiece.templatetags.timepiece_tags import seconds_to_hours
 from timepiece.utils.csv import CSVViewMixin
 from timepiece.utils.search import SearchListView
@@ -32,10 +34,15 @@ from timepiece.crm.forms import (CreateEditBusinessForm, CreateEditProjectForm,
         CreateEditActivityGoalForm, ApproveDenyPTORequestForm,
         CreateEditPaidTimeOffLog, AddBusinessNoteForm, 
         CreateEditBusinessDepartmentForm, CreateEditContactForm, 
-        AddContactNoteForm)
+        AddContactNoteForm, CreateEditLeadForm, AddLeadNoteForm,
+        SelectContactForm, AddDistinguishingValueChallenegeForm,
+        AddTemplateDifferentiatingValuesForm, CreateEditTemplateDVForm,
+        CreateEditDVCostItem, CreateEditOpportunity, EditLimitedUserProfileForm)
 from timepiece.crm.models import (Business, Project, ProjectRelationship, UserProfile,
     PaidTimeOffLog, PaidTimeOffRequest, Milestone, ActivityGoal, BusinessNote,
-    BusinessDepartment, Contact, ContactNote)
+    BusinessDepartment, Contact, ContactNote, BusinessAttachment, Lead, LeadNote,
+    DistinguishingValueChallenge, TemplateDifferentiatingValue, LeadAttachment,
+    DVCostItem, Opportunity, ProjectAttachment, LimitedAccessUserProfile)
 from timepiece.crm.utils import grouped_totals, project_activity_goals_with_progress
 from timepiece.entries.models import Entry, Activity, Location
 from timepiece.reports.forms import HourlyReportForm
@@ -43,8 +50,20 @@ from timepiece.reports.forms import HourlyReportForm
 from holidays.models import Holiday
 from . import emails
 
+try:
+    from workflow.general_task.forms import SelectGeneralTaskForm
+    from workflow.models import GeneralTask
+except:
+    pass
+
 import workdays
 
+from ajaxuploader.views import AjaxFileUploader
+from ajaxuploader.backends.mongodb import MongoDBUploadBackend
+# TODO: change this to be a utils.get_setting
+from project_toolbox_main import settings as project_settings
+from bson.objectid import ObjectId
+import gridfs
 
 @cbv_decorator(login_required)
 class QuickSearch(FormView):
@@ -103,42 +122,56 @@ def reject_user_timesheet(request, user_id):
 def view_user_timesheet(request, user_id, active_tab):
     # User can only view their own time sheet unless they have a permission.
     user = get_object_or_404(User, pk=user_id)
+    project_id = request.GET.get('project', None)
+    # if request.GET.get('clear_project', None):
+    #     project_id = None
     has_perm = request.user.has_perm('entries.view_entry_summary')
     if not (has_perm or user.pk == request.user.pk):
         return HttpResponseForbidden('Forbidden')
 
-    FormClass = UserYearMonthForm if has_perm else YearMonthForm
-    form = FormClass(request.GET or None)
+    
+    from_date, to_date = utils.get_bimonthly_dates(datetime.date.today())
+    FormClass = StatusUserDateForm if has_perm else StatusDateForm
+    form = FormClass(request.GET or {'from_date': from_date, 'to_date': (to_date - relativedelta(days=1))})
     if form.is_valid():
         if has_perm:
-            from_date, to_date, form_user = form.save()
+            from_date, to_date, form_user, status = form.save()
             if form_user and request.GET.get('yearmonth', None):
                 # Redirect to form_user's time sheet.
                 # Do not use request.GET in urlencode to prevent redirect
                 # loop caused by yearmonth parameter.
                 url = reverse('view_user_timesheet', args=(form_user.pk,))
                 request_data = {
-                    'half': 1 if from_date.day <= 15 else 2,
-                    'month': from_date.month,
-                    'year': from_date.year,
+                    'from_date': from_date,
+                    'to_date': to_date - relativedelta(days=1),
+                    'status': status,
+                    # 'project': project_id,
                     'user': form_user.pk,  # Keep so that user appears in form.
                 }
                 url += '?{0}'.format(urllib.urlencode(request_data))
                 return HttpResponseRedirect(url)
         else:  # User must be viewing their own time sheet; no redirect needed.
-            from_date, to_date = form.save()
+            from_date, to_date, status = form.save()
+        if from_date is None or to_date is None:
+            (from_date, to_date) = utils.get_bimonthly_dates(datetime.date.today())
         from_date = utils.add_timezone(from_date)
         to_date = utils.add_timezone(to_date)
     else:
         # Default to showing current bi-monthly period.
         from_date, to_date = utils.get_bimonthly_dates(datetime.date.today())
+        status = None
     entries_qs = Entry.objects.filter(user=user, writedown=False)
     # DBROWNE - CHANGED THIS TO MATCH THE DESIRED RESULT FOR AAC ENGINEERING
     #month_qs = entries_qs.timespan(from_date, span='month')
+    if status:
+        entries_qs = entries_qs.filter(status=status)
+    if project_id:
+        entries_qs = entries_qs.filter(project__id=int(project_id))
+
     month_qs = entries_qs.timespan(from_date, to_date=to_date)
     extra_values = ('start_time', 'end_time', 'comments', 'seconds_paused',
             'id', 'location__name', 'project__name', 'activity__name',
-            'status', 'mechanism')
+            'status', 'mechanism', 'project__id')
     month_entries = month_qs.date_trunc('month', extra_values)
     # For grouped entries, back date up to the start of the period.
     first_week = utils.get_period_start(from_date)
@@ -154,7 +187,7 @@ def view_user_timesheet(request, user_id, active_tab):
         grouped_qs = entries_qs.timespan(from_date, to_date=to_date)
     totals = grouped_totals(grouped_qs) if month_entries else ''
     project_entries = month_qs.order_by().values(
-        'project__name').annotate(sum=Sum('hours')).order_by('-sum')
+        'project__name', 'project__id').annotate(sum=Sum('hours')).order_by('-sum')
     summary = Entry.summary(user, from_date, to_date, writedown=False)
 
     show_approve = show_verify = False
@@ -180,7 +213,7 @@ def view_user_timesheet(request, user_id, active_tab):
     #         print 'week', week, 'week_totals', week_totals, 'days', days
     return render(request, 'timepiece/user/timesheet/view.html', {
         'active_tab': active_tab or 'overview',
-        'year_month_form': form,
+        'filter_form': form,
         'from_date': from_date,
         'to_date': to_date - relativedelta(days=1),
         'show_verify': show_verify,
@@ -190,6 +223,7 @@ def view_user_timesheet(request, user_id, active_tab):
         'grouped_totals': totals,
         'project_entries': project_entries,
         'summary': summary,
+        'project': Project.objects.get(id=project_id) if project_id else None
     })
 
 
@@ -209,17 +243,24 @@ def change_user_timesheet(request, user_id, action):
                 'timesheet.'.format(action))
 
     try:
-        from_date = request.GET.get('from_date')
+        (start, end) = utils.get_bimonthly_dates(datetime.date.today())
+        from_date = request.GET.get('from_date', start.strftime('%Y-%m-%d'))
         from_date = utils.add_timezone(
             datetime.datetime.strptime(from_date, '%Y-%m-%d'))
+        to_date = request.GET.get('to_date', 
+            (end - relativedelta(days=1)).strftime('%Y-%m-%d'))
+        to_date = utils.add_timezone(
+            datetime.datetime.strptime(to_date, '%Y-%m-%d')) + relativedelta(days=1)
+        project_id = request.GET.get('project', None)
     except (ValueError, OverflowError, KeyError):
         raise Http404
-    #to_date = from_date + relativedelta(months=1)
-    from_date, to_date = utils.get_bimonthly_dates(from_date)
+    
     entries = Entry.no_join.filter(user=user_id,
                                    end_time__gte=from_date,
                                    end_time__lt=to_date,
                                    writedown=False)
+    if project_id:
+        entries = entries.filter(project__id=int(project_id))
     active_entries = Entry.no_join.filter(
         user=user_id,
         start_time__lt=to_date,
@@ -234,14 +275,14 @@ def change_user_timesheet(request, user_id, action):
 
     return_url = reverse('view_user_timesheet', args=(user_id,))
     return_url += '?%s' % urllib.urlencode({
-        'year': from_date.year,
-        'month': from_date.month,
-        'half': 1 if from_date.day <= 15 else 2,
+        'from_date': from_date.date(),
+        'to_date': to_date.date() - relativedelta(days=1),
+        'user': user.id
     })
     if active_entries:
-        msg = 'You cannot verify/approve this timesheet while the user {0} ' \
+        msg = 'You cannot {0} this timesheet while the user {1} ' \
             'has an active entry. Please have them close any active ' \
-            'entries.'.format(user.get_name_or_username())
+            'entries.'.format(action, user.get_name_or_username())
         messages.error(request, msg)
         return redirect(return_url)
     if request.POST.get('do_action') == 'Yes':
@@ -255,7 +296,7 @@ def change_user_timesheet(request, user_id, action):
         return redirect(return_url)
     hours = entries.all().aggregate(s=Sum('hours'))['s']
     if not hours:
-        msg = 'You cannot verify/approve a timesheet with no hours'
+        msg = 'You cannot {0} a timesheet with no hours'.format(action)
         messages.error(request, msg)
         return redirect(return_url)
     return render(request, 'timepiece/user/timesheet/change.html', {
@@ -272,21 +313,21 @@ def change_user_timesheet(request, user_id, action):
 
 
 @cbv_decorator(permission_required('entries.view_project_timesheet'))
-class ProjectTimesheet(DetailView):
+class ProjectTimesheet(CSVViewMixin, DetailView):
     template_name = 'timepiece/project/timesheet.html'
     model = Project
     context_object_name = 'project'
     pk_url_kwarg = 'project_id'
 
     def get(self, *args, **kwargs):
-        if 'csv' in self.request.GET:
-            request_get = self.request.GET.copy()
-            request_get.pop('csv')
-            return_url = reverse('view_project_timesheet_csv',
-                                 args=(self.get_object().pk,))
-            return_url += '?%s' % urllib.urlencode(request_get)
-            return redirect(return_url)
-        return super(ProjectTimesheet, self).get(*args, **kwargs)
+        self.object = self.model.objects.get(id=kwargs[self.pk_url_kwarg])
+        context = self.get_context_data()
+        if self.request.GET.get('export_project_timesheet', False):
+            kls = CSVViewMixin
+        else:
+            kls = DetailView
+        return kls.render_to_response(self, context)
+        
 
     def get_context_data(self, **kwargs):
         context = super(ProjectTimesheet, self).get_context_data(**kwargs)
@@ -298,6 +339,7 @@ class ProjectTimesheet(DetailView):
             from_date, to_date = filter_form.save()
             incl_billable = filter_form.cleaned_data['billable']
             incl_non_billable = filter_form.cleaned_data['non_billable']
+            incl_writedowns = filter_form.cleaned_data['writedown']
         else:
             # date = utils.add_timezone(datetime.datetime.today())
             # from_date = utils.get_month_start(date).date()
@@ -305,11 +347,12 @@ class ProjectTimesheet(DetailView):
             to_date = from_date + relativedelta(months=1)
             incl_billable = True
             incl_non_billable = True
+            incl_writedowns = True
         
         from_datetime = datetime.datetime.combine(from_date, 
             datetime.datetime.min.time())
         to_datetime = datetime.datetime.combine(to_date,
-            datetime.datetime.max.time())
+            datetime.datetime.min.time())
 
         entries_qs = Entry.objects.filter(start_time__gte=from_datetime,
                                           end_time__lt=to_datetime,
@@ -322,6 +365,9 @@ class ProjectTimesheet(DetailView):
             pass
         else:
             entries_qs = entries_qs.filter(activity__billable=False).filter(activity__billable=True) # should return nothing
+        
+        if not incl_writedowns:
+            entries_qs = entries_qs.filter(writedown=False)
         # entries_qs = entries_qs.timespan(from_date, span='month').filter(
         #     project=project
         # )
@@ -362,7 +408,9 @@ class ProjectTimesheet(DetailView):
             'to_date': end,
             'billable': True,
             'non_billable': True,
+            'writedown': True,
             'paid_time_off': False,
+            'unpaid_time_off': False,
             'trunc': 'day',
             'projects': [],
         }
@@ -375,18 +423,20 @@ class ProjectTimesheet(DetailView):
             data[key] = key in data and \
                         str(data[key]).lower() in ('on', 'true', '1')
 
+        data['trunc'] = 'day'
+        data['projects'] = []
+        data['paid_time_off'] = False
+        data['unpaid_time_off'] = False
         form = HourlyReportForm(data)
-        for field in ['projects', 'paid_time_off', 'trunc']:
+        for field in ['projects', 'paid_time_off', 'trunc', 'unpaid_time_off']:
             form.fields[field].widget = widgets.HiddenInput()
         return form
 
-
-class ProjectTimesheetCSV(CSVViewMixin, ProjectTimesheet):
-
     def get_filename(self, context):
-        project = self.object.name
+        project = self.object.code
+        from_date_str = context['from_date'].strftime('%m-%d-%Y')
         to_date_str = context['to_date'].strftime('%m-%d-%Y')
-        return 'Project_timesheet {0} {1}'.format(project, to_date_str)
+        return '{0} {1} {2} timesheet'.format(project, from_date_str, to_date_str)
 
     def convert_context_to_csv(self, context):
         rows = []
@@ -400,6 +450,7 @@ class ProjectTimesheetCSV(CSVViewMixin, ProjectTimesheet):
             'Breaks',
             'Hours',
             'Writedown',
+            'Comments',
         ])
         for entry in context['entries']:
             data = [
@@ -412,6 +463,7 @@ class ProjectTimesheetCSV(CSVViewMixin, ProjectTimesheet):
                 seconds_to_hours(entry['seconds_paused']),
                 entry['hours'],
                 entry['writedown'],
+                entry['comments'],
             ]
             rows.append(data)
         total = context['total']
@@ -423,11 +475,90 @@ class ProjectTimesheetCSV(CSVViewMixin, ProjectTimesheet):
 
 
 @cbv_decorator(permission_required('crm.view_business'))
-class ListBusinesses(SearchListView):
+class ListBusinesses(SearchListView, CSVViewMixin):
     model = Business
     redirect_if_one_result = True
     search_fields = ['name__icontains', 'description__icontains']
     template_name = 'timepiece/business/list.html'
+
+    def get(self, request, *args, **kwargs):
+        self.export_business_list = request.GET.get('export_business_list', False)
+        if self.export_business_list:
+            kls = CSVViewMixin
+
+            form_class = self.get_form_class()
+            self.form = self.get_form(form_class)
+            self.object_list = self.get_queryset()
+            self.object_list = self.filter_results(self.form, self.object_list)
+
+            allow_empty = self.get_allow_empty()
+            if not allow_empty and len(self.object_list) == 0:
+                raise Http404("No results found.")
+
+            context = self.get_context_data(form=self.form,
+                object_list=self.object_list)
+
+            return kls.render_to_response(self, context)
+        else:
+            return super(ListBusinesses, self).get(request, *args, **kwargs)
+    
+    # def filter_form_valid(self, form, queryset):
+    #     queryset = super(ListBusinesses, self).filter_form_valid(form, queryset)
+    #     status = form.cleaned_data['status']
+    #     if status:
+    #         queryset = queryset.filter(status=status)
+    #     return queryset
+
+    def get_filename(self, context):
+        request = self.request.GET.copy()
+        search = request.get('search', '(empty)')
+        return 'business_search_{0}'.format(search)
+
+    def convert_context_to_csv(self, context):
+        """Convert the context dictionary into a CSV file."""
+        content = []
+        business_list = context['business_list']
+        if self.export_business_list:
+            headers = ['Short Name', 'Business Name', 'Active?',
+                       'Primary Contact', 'Description', 'Classification',
+                       'Status', 'Phone', 'Fax', 'Website', 'Account Number',
+                       'Industry', 'Ownership', 'Annual Revenue',
+                       'Number of Employees', 'Ticket Symbol', 'Tags',
+                       'Billing Street','Billing City', 'Billing State',
+                       'Billing Zip', 'Billing Mailstop', 'Billing Country',
+                       'Billing Latitude', 'Billing Longitude',
+                       'Shipping Street', 'Shipping City', 'Shipping State',
+                       'Shipping Zip', 'Shipping Mailstop', 'Shipping Country',
+                       'Shipping Latitude', 'Shipping Longitude'
+                       ]
+            content.append(headers)
+            for business in business_list:
+                primary_contact = 'n/a'
+                if business.primary_contact:
+                    primary_contact = '%s %s, %s, %s' % (
+                        business.primary_contact.first_name,
+                        business.primary_contact.last_name,
+                        business.primary_contact.office_phone,
+                        business.primary_contact.email)
+                row = [business.short_name, business.name, business.active,
+                       primary_contact, business.description, 
+                       business.get_classification_display(),
+                       business.get_status_display(), business.phone,
+                       business.fax, business.website, business.account_number,
+                       business.get_industry_display(), business.ownership,
+                       business.annual_revenue, business.num_of_employees,
+                       business.ticker_symbol,
+                       ', '.join([str(t) for t in business.tags.all()]),
+                       business.billing_street, business.billing_city,
+                       business.billing_state, business.billing_postalcode,
+                       business.billing_mailstop, business.billing_country,
+                       business.billing_lat, business.billing_lon,
+                       business.shipping_street, business.shipping_city,
+                       business.shipping_state, business.shipping_postalcode,
+                       business.shipping_mailstop, business.shipping_country,
+                       business.shipping_lat, business.shipping_lon]
+                content.append(row)
+        return content
 
 @permission_required('crm.view_business')
 def business(request):
@@ -479,6 +610,43 @@ class AddBusinessNote(View):
             note.save()
         return HttpResponseRedirect(request.GET.get('next', None) or reverse('view_business', args=(business.id,)))
 
+@permission_required('workflow.view_business')
+def business_upload_attachment(request, business_id):
+    try:
+        afu = AjaxFileUploader(MongoDBUploadBackend, db='business_attachments')
+        hr = afu(request)
+        content = json.loads(hr.content)
+        memo = {'uploader': str(request.user),
+                'file_id': str(content['_id']),
+                'upload_time': str(datetime.datetime.now()),
+                'filename': content['filename']}
+        memo.update(content)
+        # save attachment to ticket
+        attachment = BusinessAttachment(
+            business=Business.objects.get(id=int(business_id)),
+            file_id=str(content['_id']),
+            filename=content['filename'],
+            upload_time=datetime.datetime.now(),
+            uploader=request.user,
+            description='n/a')
+        attachment.save()
+        return HttpResponse(json.dumps(memo),
+                            content_type="application/json")
+    except:
+        print sys.exc_info(), traceback.format_exc()
+    return hr
+
+@permission_required('workflow.view_business')
+def business_download_attachment(request, business_id, attachment_id):
+    MONGO_DB_INSTANCE = project_settings.MONGO_CLIENT.business_attachments
+    GRID_FS_INSTANCE = gridfs.GridFS(MONGO_DB_INSTANCE)
+    try:
+        business_attachment = BusinessAttachment.objects.get(
+            business__id=business_id, id=attachment_id)
+        f = GRID_FS_INSTANCE.get(ObjectId(business_attachment.file_id))
+        return HttpResponse(f.read(), content_type=f.content_type)
+    except:
+        return HttpResponse("Business attachment could not be found.")
 
 
 @cbv_decorator(permission_required('crm.add_business'))
@@ -502,6 +670,43 @@ class EditBusiness(UpdateView):
     form_class = CreateEditBusinessForm
     template_name = 'timepiece/business/create_edit.html'
     pk_url_kwarg = 'business_id'
+
+@cbv_decorator(permission_required('crm.change_business'))
+class BusinessTags(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        business = Business.objects.get(id=int(kwargs['business_id']))
+        tag = request.POST.get('tag')
+        for t in tag.split(','):
+            if len(t):
+                business.tags.add(t)
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in business.tags.all()]
+        return HttpResponse(json.dumps({'tags': tags}),
+                            content_type="application/json",
+                            status=200)
+@cbv_decorator(permission_required('crm.change_business'))
+class RemoveBusinessTag(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        if request.user.is_superuser or bool(len(request.user.groups.filter(id=8))):
+            business = Business.objects.get(id=int(kwargs['business_id']))
+            tag = request.POST.get('tag')
+            if len(tag):
+                business.tags.remove(tag)
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in business.tags.all()]
+        return HttpResponse(json.dumps({'tags': tags}),
+                            content_type="application/json",
+                            status=200)
 
 @cbv_decorator(permission_required('crm.add_businessdepartment'))
 class CreateBusinessDepartment(CreateView):
@@ -600,7 +805,8 @@ class ViewUser(DetailView):
     template_name = 'timepiece/user/view.html'
 
     def get_context_data(self, **kwargs):
-        kwargs.update({'add_project_form': SelectProjectForm()})
+        kwargs.update({'add_project_form': SelectProjectForm(),
+                       'user_id': int(self.kwargs['user_id'])})
         return super(ViewUser, self).get_context_data(**kwargs)
 
 
@@ -620,6 +826,8 @@ class DeleteUser(DeleteView):
 
     def delete(self, request, *args, **kwargs):
         up = UserProfile.objects.get(user__id=int(kwargs['user_id']))
+        if up.limited:
+            up.limited.delete()
         up.delete()
         return super(DeleteUser, self).delete(request, *args, **kwargs)
 
@@ -631,6 +839,36 @@ class EditUser(UpdateView):
     template_name = 'timepiece/user/create_edit.html'
     pk_url_kwarg = 'user_id'
 
+@cbv_decorator(permission_required('crm.change_limitedaccessuserprofile'))
+class CreateLimitedAccessUserProfile(CreateView):
+    model = LimitedAccessUserProfile
+    form_class = EditLimitedUserProfileForm
+    template_name = 'timepiece/user/edit_profile.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(CreateLimitedAccessUserProfile, self).get_context_data(**kwargs)
+        context['profile'] = User.objects.get(id=int(self.kwargs['user_id'])).profile
+        return context
+
+    def get_form(self, *args, **kwargs):
+        form = super(CreateLimitedAccessUserProfile, self).get_form(*args, **kwargs)
+        form.fields['profile'].initial = User.objects.get(id=int(self.kwargs['user_id'])).profile.id
+        form.fields['profile'].widget = widgets.HiddenInput()
+        return form
+
+    def get_success_url(self):
+        return reverse_lazy('view_user', args=(int(self.kwargs['user_id']),))
+
+
+@cbv_decorator(permission_required('crm.change_limitedaccessuserprofile'))
+class EditLimitedAccessUserProfile(UpdateView):
+    model = LimitedAccessUserProfile
+    form_class = EditLimitedUserProfileForm
+    template_name = 'timepiece/user/edit_profile.html'
+    pk_url_kwarg = 'profile_id'
+
+    def get_success_url(self):
+        return reverse_lazy('view_user', args=(int(self.kwargs['user_id']),))
 
 # Projects
 
@@ -661,19 +899,11 @@ class ListProjects(SearchListView, CSVViewMixin):
             context = self.get_context_data(form=self.form,
                 object_list=self.object_list)
 
-
-            # qs = self.get_queryset()
-            # self.object_list = qs
-            # self.get_context_object_name(qs)
-            # kwargs['object_list'] = qs
-            # print 'count', qs.count()
-            # context = self.get_context_data(**kwargs)
             return kls.render_to_response(self, context)
         else:
             return super(ListProjects, self).get(request, *args, **kwargs)
     
     def filter_form_valid(self, form, queryset):
-        print 'form', form, 'queryset', queryset
         queryset = super(ListProjects, self).filter_form_valid(form, queryset)
         status = form.cleaned_data['status']
         if status:
@@ -693,16 +923,18 @@ class ListProjects(SearchListView, CSVViewMixin):
         if self.export_project_list:
             # this is a special csv export, different than stock Timepiece,
             # requested by AAC Engineering for their detailed reporting reqs
-            headers = ['Project Code', 'Project Name', 'Type', 'Business', 'Status',
-                       'Billable', 'Finder', 'Minder', 'Binder', 'Description',
-                       'Contracts -->']
+            headers = ['Project Code', 'Project Name', 'Type', 'Business', 'Business Department',
+                       'Status', 'Billable', 'Finder', 'Minder', 'Binder',
+                       'Description', 'Tags', 'Contracts -->']
             content.append(headers)
             for project in project_list:
                 row = [project.code, project.name, str(project.type),
                        '%s:%s'%(project.business.short_name, project.business.name),
+                       project.business_department.name if project.business_department else '',
                        project.status, project.billable, str(project.finder),
                        str(project.point_person), str(project.binder), 
-                       project.description]
+                       project.description, ', '.join(
+                        [t.name.strip() for t in project.tags.all()])]
                 for contract in project.contracts.all():
                     row.append(str(contract))
                 content.append(row)
@@ -718,7 +950,14 @@ class ViewProject(DetailView):
     def get_context_data(self, **kwargs):
         kwargs.update({'add_user_form': SelectUserForm(),
                        'activity_goals': project_activity_goals_with_progress(self.object)})
-        return super(ViewProject, self).get_context_data(**kwargs)
+
+        context = super(ViewProject, self).get_context_data(**kwargs)
+        try:
+            context['add_general_task_form'] = SelectGeneralTaskForm()
+        except:
+            pass
+
+        return context
 
 
 @cbv_decorator(permission_required('crm.add_project'))
@@ -743,6 +982,85 @@ class EditProject(UpdateView):
     template_name = 'timepiece/project/create_edit.html'
     pk_url_kwarg = 'project_id'
 
+@cbv_decorator(permission_required('crm.add_projectrelationship'))
+class AddProjectGeneralTask(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        try:
+            project = Project.objects.get(id=int(kwargs['project_id']))
+            general_task = SelectGeneralTaskForm(request.POST).get_general_task()
+            if general_task.project is None:
+                general_task.project = project
+                general_task.save()
+            else:
+                msg = '%s already belongs to Project <a href="' + \
+                reverse('view_project', args=(general_task.project.id,)) + \
+                '">%s.  Please remove it from that Project before ' + \
+                'associating with this one.' % (
+                    general_task.form_id, general_task.project.code)
+                messages.error(request, msg)
+        except:
+            print sys.exc_info(), traceback.format_exc()
+        finally:
+            return HttpResponseRedirect(request.GET.get('next', None) 
+                or reverse_lazy('view_project', args=(project.id,)))
+
+@cbv_decorator(permission_required('crm.add_projectrelationship'))
+class RemoveProjectGeneralTask(View):
+
+    def get(self, request, *args, **kwargs):
+        try:
+            project = Project.objects.get(id=int(kwargs['project_id']))
+            general_task_id = request.GET.get('general_task_id')
+            general_task = GeneralTask.objects.get(id=int(general_task_id))
+            general_task.project = None
+            general_task.save()
+        except:
+            print sys.exc_info(), traceback.format_exc()
+        finally:
+            return HttpResponseRedirect(request.GET.get('next', None) 
+                or reverse_lazy('view_project', args=(project.id,)))
+
+@cbv_decorator(permission_required('crm.change_project'))
+class ProjectTags(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        project = Project.objects.get(id=int(kwargs['project_id']))
+        tag = request.POST.get('tag')
+        for t in tag.split(','):
+            if len(t):
+                project.tags.add(t)
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in project.tags.all()]
+        return HttpResponse(json.dumps({'tags': tags}),
+                            content_type="application/json",
+                            status=200)
+
+@cbv_decorator(permission_required('crm.change_project'))
+class RemoveProjectTag(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        if request.user.is_superuser or bool(len(request.user.groups.filter(id=8))):
+            project = Project.objects.get(id=int(kwargs['project_id']))
+            tag = request.POST.get('tag')
+            if len(tag):
+                project.tags.remove(tag)
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in project.tags.all()]
+        return HttpResponse(json.dumps({'tags': tags}),
+                            content_type="application/json",
+                            status=200)
 
 # User-project relationships
 
@@ -841,8 +1159,9 @@ def pto_home(request, active_tab='summary'):
     data['pto_requests'] = PaidTimeOffRequest.objects.filter(user_profile=data['user_profile']).order_by('-pto_start_date')
     data['pto_log'] = PaidTimeOffLog.objects.filter(user_profile=data['user_profile'])
     if request.user.has_perm('crm.can_approve_pto_requests') or request.user.has_perm('crm.can_process_pto_requests'):
-        data['pto_approvals'] = PaidTimeOffRequest.objects.filter(Q(status=PaidTimeOffRequest.PENDING) | Q(status=PaidTimeOffRequest.APPROVED))
-        data['pto_all_history'] = PaidTimeOffLog.objects.filter().order_by('user_profile', '-date')
+        data['pto_approvals'] = PaidTimeOffRequest.objects.filter(Q(status=PaidTimeOffRequest.PENDING) | Q(status=PaidTimeOffRequest.APPROVED) | Q(status=PaidTimeOffRequest.MODIFIED))
+        data['pto_all_history'] = PaidTimeOffLog.objects.filter(pto=True).order_by('user_profile', '-date')
+        data['upto_all_history'] = PaidTimeOffLog.objects.filter(pto=False).order_by('user_profile', '-date')
         data['all_pto_requests'] = PaidTimeOffRequest.objects.all().order_by('-request_date')
     if active_tab:
         data['active_tab'] = active_tab
@@ -857,6 +1176,9 @@ def pto_home(request, active_tab='summary'):
              'holidays': Holiday.get_holidays_for_year(year=year, kwargs={'paid_holiday': True})}
         )
     data['today'] = datetime.date.today()
+
+    if request.user.has_perm('crm.view_current_pto'):
+        data['current_pto'] = Group.objects.get(id=1).user_set.all().filter(is_active=True, profile__earns_pto=True).order_by('last_name', 'first_name')
     return render(request, 'timepiece/pto/home.html', data)
 
 
@@ -940,35 +1262,38 @@ class ApprovePTORequest(UpdateView):
         num_workdays = workdays.networkdays(form.instance.pto_start_date,
                                             form.instance.pto_end_date,
                                             holidays)
+        num_workdays = max(num_workdays, 1)
         
         # add PTO log entries
-        if form.instance.pto:
-            delta = form.instance.pto_end_date - form.instance.pto_start_date
-            hours = float(form.instance.amount)/float(num_workdays)
-            days_delta = delta.days + 1
-            for i in range(days_delta):
-                date = form.instance.pto_start_date + datetime.timedelta(days=i)
-                
-                # if the date is weekend or holiday, skip it
-                if (date.weekday() >= 5) or (date in holidays):
-                    continue
+        # if form.instance.pto:
+        delta = form.instance.pto_end_date - form.instance.pto_start_date
+        hours = float(form.instance.amount)/float(num_workdays)
+        days_delta = delta.days + 1
+        for i in range(days_delta):
+            date = form.instance.pto_start_date + datetime.timedelta(days=i)
+            
+            # if the date is weekend or holiday, skip it
+            if (date.weekday() >= 5) or (date in holidays):
+                continue
 
-                start_time = datetime.datetime.combine(date, datetime.time(8))
-                end_time = start_time + datetime.timedelta(hours=hours)
-                
-                # add pto log entry
-                pto_log = PaidTimeOffLog(user_profile=up, 
-                                         date=date,
-                                         amount=-1*(float(form.instance.amount) / float(num_workdays)), 
-                                         comment=form.instance.comment,
-                                         pto_request=form.instance)
-                pto_log.save()
+            start_time = datetime.datetime.combine(date, datetime.time(8))
+            end_time = start_time + datetime.timedelta(hours=hours)
+            
+            # add pto log entry
+            pto_log = PaidTimeOffLog(user_profile=up, 
+                                     date=date,
+                                     amount=-1*(float(form.instance.amount) / float(num_workdays)), 
+                                     comment=form.instance.comment,
+                                     pto_request=form.instance,
+                                     pto=form.instance.pto)
+            pto_log.save()
 
-                # if pto entry, add timesheet entry
-                if form.instance.pto and form.instance.amount > 0:
+            # if pto entry, add timesheet entry
+            if form.instance.amount > 0:
+                if form.instance.pto:
                     entry = Entry(user=form.instance.user_profile.user,
-                                  project=Project.objects.get(id=utils.get_setting('TIMEPIECE_PTO_PROJECT')[date.year]),
-                                  activity=Activity.objects.get(code='PTO', name='Paid Time Off'),
+                                  project=Project.objects.get(id=utils.get_setting('TIMEPIECE_PTO_PROJECT')),
+                                  activity=Activity.objects.get(id=24),
                                   location=Location.objects.get(id=3),
                                   start_time=start_time,
                                   end_time=end_time,
@@ -976,6 +1301,19 @@ class ApprovePTORequest(UpdateView):
                                   hours=hours,
                                   pto_log=pto_log,
                                   mechanism=Entry.PTO)
+                    entry.save()
+                else:
+                    entry = Entry(user=form.instance.user_profile.user,
+                                  project=Project.objects.get(id=utils.get_setting('TIMEPIECE_UPTO_PROJECT')),
+                                  activity=Activity.objects.get(id=41),
+                                  location=Location.objects.get(id=3),
+                                  start_time=start_time,
+                                  end_time=end_time,
+                                  comments='Approved UPTO %s.' % form.instance.pk,
+                                  hours=hours,
+                                  pto_log=pto_log,
+                                  mechanism=Entry.PTO)
+                                  #status=Entry.APPROVED)
                     entry.save()
 
         return super(ApprovePTORequest, self).form_valid(form)
@@ -1015,7 +1353,29 @@ class CreatePTOLogEntry(CreateView):
     template_name = 'timepiece/pto/create-edit-log.html'
 
     def get_success_url(self):
-        return '/timepiece/pto/all_history/'
+        return reverse('pto', args=('all_history',))
+
+@cbv_decorator(permission_required('crm.change_paidtimeofflog'))
+class EditPTOLogEntry(UpdateView):
+    model = PaidTimeOffLog
+    form_class = CreateEditPaidTimeOffLog
+    pk_url_kwarg = 'pto_log_id'
+    template_name = 'timepiece/pto/create-edit-log.html'
+
+    def get_success_url(self):
+        return reverse('pto', args=('all_history',))
+
+@cbv_decorator(permission_required('crm.delete_paidtimeofflog'))
+class DeletePTOLogEntry(DeleteView):
+    model = PaidTimeOffLog
+    pk_url_kwarg = 'pto_log_id'
+    template_name = 'timepiece/delete_object.html'
+
+    def get_success_url(self):
+        return '/timepiece/project/%d' % int(self.kwargs['project_id'])
+
+    def get_success_url(self):
+        return reverse('pto', args=('all_history',))
 
 @login_required
 def pto_request_details(request, pto_request_id):
@@ -1038,6 +1398,11 @@ class CreateMilestone(CreateView):
     form_class = CreateEditMilestoneForm
     template_name = 'timepiece/project/milestone/create_edit.html'
 
+    def get_context_data(self, **kwargs):
+        context = super(CreateMilestone, self).get_context_data(**kwargs)
+        context['project'] = Project.objects.get(id=int(self.kwargs['project_id']))
+        return context
+
     def form_valid(self, form):
         form.instance.project = Project.objects.get(id=int(self.kwargs['project_id']))
         return super(CreateMilestone, self).form_valid(form)
@@ -1052,6 +1417,11 @@ class EditMilestone(UpdateView):
     form_class = CreateEditMilestoneForm
     template_name = 'timepiece/project/milestone/create_edit.html'
     pk_url_kwarg = 'milestone_id'
+
+    def get_context_data(self, **kwargs):
+        context = super(EditMilestone, self).get_context_data(**kwargs)
+        context['project'] = Project.objects.get(id=int(self.kwargs['project_id']))
+        return context
 
     def get_success_url(self):
         return '/timepiece/project/%d' % int(self.kwargs['project_id'])
@@ -1072,43 +1442,128 @@ class DeleteMilestone(DeleteView):
 class CreateActivityGoal(CreateView):
     model = ActivityGoal
     form_class = CreateEditActivityGoalForm
-    template_name = 'timepiece/project/milestone/activity_goal/create_edit.html'
+    template_name = 'timepiece/project/activity_goal/create_edit.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(CreateActivityGoal, self).get_context_data(**kwargs)
+        context['project'] = Project.objects.get(id=int(self.kwargs['project_id']))
+        return context
+
+    def get_initial(self):
+        employee = self.request.GET.get('employee', None)
+        activity = self.request.GET.get('activity', None)
+        start_date = self.request.GET.get('start_date', datetime.date.today())
+        end_date = self.request.GET.get('end_date', None)
+        try:
+            project = Project.objects.get(id=int(self.kwargs['project_id']))
+        except:
+            # redirect somewhere else with an error
+            pass
+        initial = {'employee': employee,
+                   'activity': activity,
+                   'date': start_date,
+                   'end_date': end_date,
+                   'goal_hours': self.request.GET.get('goal_hours', None)}
+        if employee and activity and project and start_date==datetime.date.today():
+            # find the initial date of charging
+            try:
+                e = Entry.objects.filter(user__id=employee, 
+                    activity__id=activity, project=project
+                    ).order_by('-start_time')[0:1].get()
+                initial['date'] = e.start_time.date()
+            except ObjectDoesNotExist:
+                pass
+        
+        return initial
 
     def get_form(self, *args, **kwargs):
         form = super(CreateActivityGoal, self).get_form(*args, **kwargs)
         project = Project.objects.get(id=int(self.kwargs['project_id']))
         if project.activity_group:
             activities = [(a.id, a.name) for a in project.activity_group.activities.all()]
-            activities.insert(0, ('', '---------'))
             form.fields['activity'].choices = activities
+
+        employee_choices = [(None, '--- AAC EMPLOYEES ---')]
+        exclude = []
+        for u in Group.objects.get(id=1).user_set.filter(
+            is_active=True).order_by('last_name', 'first_name'):
+            
+            employee_choices.append((u.pk, '%s, %s'%(u.last_name, u.first_name)))
+            exclude.append(u.pk)
+
+        employee_choices.append((None, '--- EXTERNAL USERS ---'))
+        for u in User.objects.filter(is_active=True).exclude(id__in=exclude
+            ).order_by('last_name', 'first_name'):
+            
+            employee_choices.append((u.pk, '%s, %s'%(u.last_name, u.first_name)))
+            # exclude.append(u.pk)
+
+        employee_choices.append((None, '--- INACTIVE USERS ---'))
+        for u in User.objects.all().exclude(id__in=exclude
+            ).order_by('last_name', 'first_name'):
+            
+            employee_choices.append((u.pk, '%s, %s'%(u.last_name, u.first_name)))
+        
+        form.fields['employee'].choices = employee_choices 
         return form
 
     def form_valid(self, form):
-        form.instance.milestone = Milestone.objects.get(id=int(self.kwargs['milestone_id']))
+        form.instance.project = Project.objects.get(id=int(self.kwargs['project_id']))
         return super(CreateActivityGoal, self).form_valid(form)
 
     def get_success_url(self):
-        return '/timepiece/project/%d/milestone/%d' % (int(self.kwargs['project_id']), int(self.kwargs['milestone_id']))
+        return self.request.GET.get('next', None) or reverse_lazy(
+            'view_project', args=(int(self.kwargs['project_id']),))
 
 
 @cbv_decorator(permission_required('crm.change_activitygoal'))
 class EditActivityGoal(UpdateView):
     model = ActivityGoal
     form_class = CreateEditActivityGoalForm
-    template_name = 'timepiece/project/milestone/activity_goal/create_edit.html'
+    template_name = 'timepiece/project/activity_goal/create_edit.html'
     pk_url_kwarg = 'activity_goal_id'
+
+
+    def get_context_data(self, **kwargs):
+        context = super(EditActivityGoal, self).get_context_data(**kwargs)
+        context['project'] = Project.objects.get(id=int(self.kwargs['project_id']))
+        return context
 
     def get_form(self, *args, **kwargs):
         form = super(EditActivityGoal, self).get_form(*args, **kwargs)
         project = Project.objects.get(id=int(self.kwargs['project_id']))
         if project.activity_group is not None:
             activities = [(a.id, a.name) for a in project.activity_group.activities.all()]
-            activities.insert(0, ('', '---------'))
             form.fields['activity'].choices = activities
+
+        employee_choices = [(None, '--- AAC EMPLOYEES ---')]
+        exclude = []
+        for u in Group.objects.get(id=1).user_set.filter(
+            is_active=True).order_by('last_name', 'first_name'):
+            
+            employee_choices.append((u.pk, '%s, %s'%(u.last_name, u.first_name)))
+            exclude.append(u.pk)
+
+        employee_choices.append((None, '--- EXTERNAL USERS ---'))
+        for u in User.objects.filter(is_active=True).exclude(id__in=exclude
+            ).order_by('last_name', 'first_name'):
+            
+            employee_choices.append((u.pk, '%s, %s'%(u.last_name, u.first_name)))
+            exclude.append(u.pk)
+
+        employee_choices.append((None, '--- INACTIVE USERS ---'))
+        for u in User.objects.all().exclude(id__in=exclude
+            ).order_by('last_name', 'first_name'):
+            
+            employee_choices.append((u.pk, '%s, %s'%(u.last_name, u.first_name)))
+        
+        form.fields['employee'].choices = employee_choices 
+        
         return form
 
     def get_success_url(self):
-        return '/timepiece/project/%d/milestone/%d' % (int(self.kwargs['project_id']), int(self.kwargs['milestone_id']))
+        return self.request.GET.get('next', None) or reverse_lazy(
+            'view_project', args=(int(self.kwargs['project_id']),))
 
 
 @cbv_decorator(permission_required('crm.delete_activitygoal'))
@@ -1118,7 +1573,7 @@ class DeleteActivityGoal(DeleteView):
     template_name = 'timepiece/delete_object.html'
 
     def get_success_url(self):
-        return '/timepiece/project/%d/milestone/%d' % (int(self.kwargs['project_id']), int(self.kwargs['milestone_id']))
+        return '/timepiece/project/%d' % (int(self.kwargs['project_id']),)
 
 from itertools import groupby
 import numpy
@@ -1151,10 +1606,14 @@ def burnup_chart_data(request, project_id):
                            datetime.date.today() + datetime.timedelta(days=7))
         except:
             try:
-                end_date = max(Entry.objects.filter(project=project).order_by('-start_time')[0].start_time.date(),
+                end_date = max(Milestone.objects.filter(project=project).order_by('-due_date')[0].due_date,
                                datetime.date.today() + datetime.timedelta(days=7))
             except:
-                end_date = datetime.date.today() + datetime.timedelta(days=7)
+                try:
+                    end_date = max(Entry.objects.filter(project=project).order_by('-start_time')[0].start_time.date(),
+                                   datetime.date.today() + datetime.timedelta(days=7))
+                except:
+                    end_date = datetime.date.today() + datetime.timedelta(days=7)
         end_date += datetime.timedelta(days=1)
         mgmt_entries_raw = Entry.objects.filter(project=project).values('start_time', 'activity', 'hours').order_by('start_time')
         mgmt_entries = []
@@ -1237,7 +1696,7 @@ def burnup_chart_data(request, project_id):
         
         # get ActivityGoals and group by Activity
         ag_temp = [[], [], [], []]
-        for ag in ActivityGoal.objects.filter(milestone__project=project):
+        for ag in ActivityGoal.objects.filter(project=project).order_by('employee__last_name', 'employee__first_name', 'goal_hours'):
             if ag.activity is None:
                 ag_temp[3].append(ag)
             elif ag.activity.id == PROJECT_MANAGEMENT_ACTIVITY_ID:
@@ -1252,29 +1711,44 @@ def burnup_chart_data(request, project_id):
         # sort ActivityGoals by date within categories
         for i in range(len(ag_temp)):
             ag_temp[i] = sorted(ag_temp[i], key=lambda x: x.date or datetime.date.today())
+            ag_len = len(ag_temp[i])
+            k = 0
+            day_totals = []
+            for j in range((end_date - start_date).days):
+                cur_date = start_date + datetime.timedelta(days=j)
+                day_totals.append(0.0)
+                while k < ag_len:
+                    if ag_temp[i][k].date <= cur_date:
+                        day_totals[j] += float(ag_temp[i][k].goal_hours)
+                        k += 1
+                    else:
+                        break
+            # print numpy.cumsum(day_totals)
+
+            activity_goals[i].extend(list(numpy.cumsum(day_totals)))
         
-        for i in range(len(ag_temp)):
-            if len(ag_temp[i]) == 0:
-                continue
-            ag_hours = []
-            for employee, ags in groupby(ag_temp[i], lambda x: x.employee):
-                last_date = start_date
-                vals = []
-                for ag in ags:
-                    gh = float(ag.goal_hours)
-                    for j in range((ag.milestone.due_date - last_date).days + 1):
-                        vals.append(gh)
-                    last_date = ag.milestone.due_date
-                ag_hours.append(vals)
+        # for i in range(len(ag_temp)):
+        #     if len(ag_temp[i]) == 0:
+        #         continue
+        #     ag_hours = []
+        #     for employee, ags in groupby(ag_temp[i], lambda x: x.employee):
+        #         last_date = start_date
+        #         vals = []
+        #         for ag in ags:
+        #             gh = float(ag.goal_hours)
+        #             for j in range((ag.end_date - last_date).days + 1):
+        #                 vals.append(gh)
+        #             last_date = ag.end_date
+        #         ag_hours.append(vals)
             
-            max_len = len(ag_hours[0])
-            for ag_hours_employee in ag_hours:
-                max_len = max(max_len, len(ag_hours_employee))
-            for ag_hours_employee in ag_hours:
-                val = ag_hours_employee[-1]
-                while len(ag_hours_employee) < max_len:
-                    ag_hours_employee.append(val)
-            activity_goals[i].extend(list(numpy.sum(ag_hours, axis=0)))
+        #     max_len = len(ag_hours[0])
+        #     for ag_hours_employee in ag_hours:
+        #         max_len = max(max_len, len(ag_hours_employee))
+        #     for ag_hours_employee in ag_hours:
+        #         val = ag_hours_employee[-1]
+        #         while len(ag_hours_employee) < max_len:
+        #             ag_hours_employee.append(val)
+        #     activity_goals[i].extend(list(numpy.sum(ag_hours, axis=0)))
 
         data = {'entries': entries,
                 'start_date': str(start_date),
@@ -1428,7 +1902,9 @@ class ContactTags(View):
         for t in tag.split(','):
             if len(t):
                 contact.tags.add(t)
-        tags = [t.name for t in contact.tags.all()]
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in contact.tags.all()]
         return HttpResponse(json.dumps({'tags': tags}),
                             content_type="application/json",
                             status=200)
@@ -1445,7 +1921,9 @@ class RemoveContactTag(View):
             tag = request.POST.get('tag')
             if len(tag):
                 contact.tags.remove(tag)
-        tags = [t.name for t in contact.tags.all()]
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in contact.tags.all()]
         return HttpResponse(json.dumps({'tags': tags}),
                             content_type="application/json",
                             status=200)
@@ -1472,3 +1950,853 @@ class EditContact(UpdateView):
     form_class = CreateEditContactForm
     template_name = 'timepiece/contact/create_edit.html'
     pk_url_kwarg = 'contact_id'
+
+
+""" LEADS """
+@cbv_decorator(permission_required('crm.view_lead'))
+class ListLeads(SearchListView, CSVViewMixin):
+    model = Lead
+    redirect_if_one_result = True
+    search_fields = ['title__icontains', 
+                     'primary_contact__first_name__icontains',
+                     'primary_contact__last_name__icontains',
+                     'primary_contact__email__icontains',
+                     'primary_contact__business__name__icontains']
+    template_name = 'timepiece/lead/list.html'
+
+    def get(self, request, *args, **kwargs):
+        self.export_lead_list = request.GET.get('export_lead_list', False)
+        self.export_lead_list_general_tasks = request.GET.get('export_lead_list_general_tasks', False)
+        if self.export_lead_list:
+            kls = CSVViewMixin
+
+            form_class = self.get_form_class()
+            self.form = self.get_form(form_class)
+            self.object_list = self.get_queryset()
+            self.object_list = self.filter_results(self.form, self.object_list)
+
+            allow_empty = self.get_allow_empty()
+            if not allow_empty and len(self.object_list) == 0:
+                raise Http404("No results found.")
+
+            context = self.get_context_data(form=self.form,
+                object_list=self.object_list)
+
+            return kls.render_to_response(self, context)
+
+        elif self.export_lead_list_general_tasks:
+            kls = CSVViewMixin
+
+            form_class = self.get_form_class()
+            self.form = self.get_form(form_class)
+            self.object_list = self.get_queryset()
+            self.object_list = self.filter_results(self.form, self.object_list)
+
+            self.object_list = GeneralTask.objects.filter(
+                lead__in=self.object_list).order_by('lead__status',
+                'lead__title', 'lead', 'form_id')
+
+            allow_empty = self.get_allow_empty()
+            if not allow_empty and len(self.object_list) == 0:
+                raise Http404("No results found.")
+
+            context = self.get_context_data(form=self.form,
+                object_list=self.object_list)
+
+            return kls.render_to_response(self, context)
+
+        else:
+            return super(ListLeads, self).get(request, *args, **kwargs)
+    
+    # def filter_form_valid(self, form, queryset):
+    #     queryset = super(ListContacts, self).filter_form_valid(form, queryset)
+    #     status = form.cleaned_data['status']
+    #     if status:
+    #         queryset = queryset.filter(status=status)
+    #     return queryset
+
+    def get_filename(self, context):
+        if self.export_lead_list:
+            request = self.request.GET.copy()
+            search = request.get('search', '(empty)')
+            return 'lead_search_{0}'.format(search)
+        elif self.export_lead_list_general_tasks:
+            request = self.request.GET.copy()
+            search = request.get('search', '(empty)')
+            return 'lead_search_{0}_general_tasks'.format(search)
+
+    def convert_context_to_csv(self, context):
+        """Convert the context dictionary into a CSV file."""
+        content = []
+        lead_list = context['lead_list'] if 'lead_list' in context else []
+        general_task_list = context['generaltask_list'] if 'generaltask_list' in context else []
+        if self.export_lead_list:
+            headers = ['ID',
+                       'Title',
+                       'Status',
+                       'AAC Primary',
+                       'Primary Contact Salutaton', 
+                       'Primary Contact First Name', 
+                       'Primary Contact Last Name', 
+                       'Primary Contact Title', 
+                       'Primary Contact Email',
+                       'Primary Contact Office Phone', 
+                       'Primary Contact Mobile Phone', 
+                       'Primary Contact Home Phone', 
+                       'Primary Contact Other Phone', 
+                       'Primary Contact Fax', 
+                       'Primary Contact Business Name',
+                       'Primary Contact Business Department Name', 
+                       'Primary Contact Assistant Name',
+                       'Primary Contact Assistant Phone', 
+                       'Primary Contact Assistant Email', 
+                       'Primary Contact Mailing Street',
+                       'Primary Contact Mailing City', 
+                       'Primary Contact Mailing State', 
+                       'Primary Contact Mailing Postal Code',
+                       'Primary Contact Mailing Mailstop', 
+                       'Primary Contact Mailing Country', 
+                       'Primary Contact Mailing Latitude',
+                       'Primary Contact Mailing Longitude', 
+                       'Primary Contact Other Street', 
+                       'Primary Contact Other City', 
+                       'Primary Contact Other State', 
+                       'Primary Contact Other Postal Code', 
+                       'Primary Contact Other Mailstop', 
+                       'Primary Contact Other Country', 
+                       'Primary Contact Other Latitude', 
+                       'Primary Contact Other Longitude', 
+                       'Primary Contact Opted Out of Email', 
+                       'Primary Contact Opted Out of Fax', 
+                       'Primary Contact DO NOT CALL',
+                       'Primary Contact Birthday', 
+                       'Lead Source Email', 'Tags -->']
+            content.append(headers)
+            for lead in lead_list:
+                if lead.primary_contact:
+                    row = [lead.id,
+                           lead.title,
+                           lead.get_status_display(),
+                           '%s %s' % (lead.aac_poc.first_name, lead.aac_poc.last_name),
+                           lead.primary_contact.salutation, 
+                           lead.primary_contact.first_name, 
+                           lead.primary_contact.last_name, 
+                           lead.primary_contact.title, 
+                           lead.primary_contact.email, 
+                           lead.primary_contact.office_phone,
+                           lead.primary_contact.mobile_phone, 
+                           lead.primary_contact.home_phone,
+                           lead.primary_contact.other_phone, 
+                           lead.primary_contact.fax, 
+                           lead.primary_contact.business,
+                           lead.primary_contact.business_department, 
+                           lead.primary_contact.assistant_name,
+                           lead.primary_contact.assistant_phone, 
+                           lead.primary_contact.assistant_email,
+                           lead.primary_contact.mailing_street, 
+                           lead.primary_contact.mailing_city,
+                           lead.primary_contact.mailing_state, 
+                           lead.primary_contact.mailing_postalcode,
+                           lead.primary_contact.mailing_mailstop, 
+                           lead.primary_contact.mailing_country,
+                           lead.primary_contact.mailing_lat, 
+                           lead.primary_contact.mailing_lon, 
+                           lead.primary_contact.other_street,
+                           lead.primary_contact.other_city, 
+                           lead.primary_contact.other_state,
+                           lead.primary_contact.other_postalcode, 
+                           lead.primary_contact.other_mailstop,
+                           lead.primary_contact.other_country, 
+                           lead.primary_contact.other_lat, 
+                           lead.primary_contact.other_lon,
+                           lead.primary_contact.has_opted_out_of_email, 
+                           lead.primary_contact.has_opted_out_of_fax,
+                           lead.primary_contact.do_not_call, 
+                           lead.primary_contact.birthday, 
+                           lead.lead_source.email]
+                else:
+                    row = [lead.id,
+                           lead.title,
+                           lead.get_status_display(),
+                           '%s %s' % (lead.aac_poc.first_name, lead.aac_poc.last_name),
+                           'n/a', 
+                           'n/a', 
+                           'n/a', 
+                           'n/a', 
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a',
+                           'n/a', 
+                           'n/a', 
+                           lead.lead_source.email]
+                for tag in lead.tags.all():
+                    row.append(tag)
+
+                content.append(row)
+        elif self.export_lead_list_general_tasks:
+            headers = ['Lead ID', 'Lead', 'Lead Status', 'General Task ID', 'GT Status',
+                'GT Priority', 'GT Due Date', 'GT Assignee', 'GT Description']
+            content.append(headers)
+            for gt in general_task_list:
+                row = [ gt.lead.id,
+                        gt.lead.title,
+                        gt.lead.get_status_display(),
+                        gt.form_id,
+                        gt.status,
+                        gt.get_priority_display(),
+                        gt.requested_date,
+                        str(gt.assignee),
+                        gt.description ]
+                content.append(row)
+
+        return content
+
+@cbv_decorator(permission_required('crm.view_lead'))
+class ViewLead(DetailView):
+    model = Lead
+    pk_url_kwarg = 'lead_id'
+
+    def get_context_data(self, **kwargs):
+        context = super(ViewLead, self).get_context_data(**kwargs)
+        context['add_lead_note_form'] = AddLeadNoteForm()
+        context['open_general_task_count'] = \
+            self.object.generaltask_set.filter(status__terminal=False).count()
+        context['dv_count'] = \
+            self.object.distinguishingvaluechallenge_set.all().count()
+        context['opportunity_count'] = self.object.opportunity_set.all().count()
+
+        return context
+
+class ViewLeadGeneralInfo(ViewLead):
+    template_name = 'timepiece/lead/view.html'
+    
+    def get_context_data(self, **kwargs):
+        context = super(ViewLeadGeneralInfo, self).get_context_data(**kwargs)
+        context['add_user_form'] = SelectContactForm()
+        context['active'] = 'general_info'
+
+        try:
+            context['add_general_task_form'] = SelectGeneralTaskForm()
+        except:
+            pass
+
+        return context
+
+class ViewLeadDistinguishingValue(ViewLead):
+    template_name = 'timepiece/lead/view_differentiating_value.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(ViewLeadDistinguishingValue, self).get_context_data(**kwargs)
+        context['active'] = 'distinguishing_value'
+
+        if context['dv_count'] == 0:
+            context['active_tab'] = 'empty'
+        else:
+            dvc_index = int(self.request.GET.get('tab', 1))
+            context['active_tab'] = 'dvc%d' % (dvc_index)
+            dvc_form = AddDistinguishingValueChallenegeForm()
+            dvc = self.object.distinguishingvaluechallenge_set.all(
+                )[dvc_index - 1]
+            context['dvc_form'] = dvc_form
+            context['dvc'] = dvc
+        return context
+
+class ViewLeadOpportunities(ViewLead):
+    template_name = 'timepiece/lead/view_opportunities.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(ViewLeadOpportunities, self).get_context_data(**kwargs)
+        context['active'] = 'opportunities'
+
+        return context
+
+@cbv_decorator(permission_required('crm.add_leadnote'))
+class AddLeadNote(View):
+
+    def post(self, request, *args, **kwargs):
+        user = self.request.user
+        lead = Lead.objects.get(id=int(kwargs['lead_id']))
+        note = LeadNote(lead=lead,
+                           author=user,
+                           text=request.POST.get('text', ''))
+        if len(note.text):
+            note.save()
+        return HttpResponseRedirect(request.GET.get('next', None) 
+            or reverse('view_lead', args=(lead.id,)))
+
+@cbv_decorator(permission_required('crm.add_leadnote'))
+class LeadTags(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=200)
+
+    def post(self, request, *args, **kwargs):
+        lead = Lead.objects.get(id=int(kwargs['lead_id']))
+        tag = request.POST.get('tag')
+        for t in tag.split(','):
+            if len(t):
+                lead.tags.add(t)
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in lead.tags.all()]
+        return HttpResponse(json.dumps({'tags': tags}),
+                            content_type="application/json",
+                            status=200)
+
+@cbv_decorator(permission_required('crm.delete_lead'))
+class RemoveLeadTag(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        # TODO: make this a permission
+        if request.user.is_superuser or bool(len(request.user.groups.filter(id=8))):
+            lead = Lead.objects.get(id=int(kwargs['lead_id']))
+            tag = request.POST.get('tag')
+            if len(tag):
+                lead.tags.remove(tag)
+        tags = [{'id': t.id, 
+                 'url': reverse('similar_items', args=(t.id,)),
+                 'name':t.name} for t in lead.tags.all()]
+        return HttpResponse(json.dumps({'tags': tags}),
+                            content_type="application/json",
+                            status=200)
+
+@permission_required('crm.view_lead')
+def lead_upload_attachment(request, lead_id):
+    try:
+        afu = AjaxFileUploader(MongoDBUploadBackend, db='lead_attachments')
+        hr = afu(request)
+        content = json.loads(hr.content)
+        memo = {'uploader': str(request.user),
+                'file_id': str(content['_id']),
+                'upload_time': str(datetime.datetime.now()),
+                'filename': content['filename']}
+        memo.update(content)
+        # save attachment to ticket
+        attachment = LeadAttachment(
+            lead=Lead.objects.get(id=int(lead_id)),
+            file_id=str(content['_id']),
+            filename=content['filename'],
+            upload_time=datetime.datetime.now(),
+            uploader=request.user,
+            description='n/a')
+        attachment.save()
+        return HttpResponse(json.dumps(memo),
+                            content_type="application/json")
+    except:
+        print sys.exc_info(), traceback.format_exc()
+    return hr
+
+@permission_required('crm.view_lead')
+def lead_download_attachment(request, lead_id, attachment_id):
+    MONGO_DB_INSTANCE = project_settings.MONGO_CLIENT.lead_attachments
+    GRID_FS_INSTANCE = gridfs.GridFS(MONGO_DB_INSTANCE)
+    try:
+        lead_attachment = LeadAttachment.objects.get(
+            lead__id=lead_id, id=attachment_id)
+        f = GRID_FS_INSTANCE.get(ObjectId(lead_attachment.file_id))
+        return HttpResponse(f.read(), content_type=f.content_type)
+    except:
+        return HttpResponse("Lead attachment could not be found.")
+
+@cbv_decorator(permission_required('crm.add_lead'))
+class CreateLead(CreateView):
+    model = Lead
+    form_class = CreateEditLeadForm
+    template_name = 'timepiece/lead/create_edit.html'
+
+    def get_initial(self):
+        return {
+            'lead_source': self.request.user,
+            'aac_poc': self.request.user,
+            'created_by': self.request.user,
+            'last_editor': self.request.user,
+        }
+
+    def form_valid(self, form):
+        form.instance.created_by = self.request.user
+        form.instance.last_editor = self.request.user
+        return super(CreateLead, self).form_valid(form)
+
+
+@cbv_decorator(permission_required('crm.delete_lead'))
+class DeleteLead(DeleteView):
+    model = Lead
+    success_url = reverse_lazy('list_leads')
+    pk_url_kwarg = 'lead_id'
+    template_name = 'timepiece/delete_object.html'
+
+
+@cbv_decorator(permission_required('crm.change_lead'))
+class EditLead(UpdateView):
+    model = Lead
+    form_class = CreateEditLeadForm
+    template_name = 'timepiece/lead/create_edit.html'
+    pk_url_kwarg = 'lead_id'
+
+
+@cbv_decorator(permission_required('crm.change_lead'))
+class AddLeadContact(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        try:
+            lead = Lead.objects.get(id=int(kwargs['lead_id']))
+            contact = SelectContactForm(request.POST).get_contact()
+            if contact:
+                lead.contacts.add(contact)
+            return HttpResponseRedirect(request.GET.get('next', None) 
+                or reverse_lazy('view_lead', args=(lead.id,)))
+        except:
+            return HttpResponseRedirect(request.GET.get('next', None) 
+                or reverse_lazy('view_lead', args=(lead.id,)))
+
+@cbv_decorator(permission_required('crm.change_lead'))
+class RemoveLeadContact(View):
+
+    def get(self, request, *args, **kwargs):
+        lead = Lead.objects.get(id=int(kwargs['lead_id']))
+        contact_id = request.GET.get('contact_id')
+        contact = Contact.objects.get(id=int(contact_id))
+        lead.contacts.remove(contact)
+        return HttpResponseRedirect(request.GET.get('next', None) 
+            or reverse_lazy('view_lead', args=(lead.id,)))
+
+@cbv_decorator(permission_required('crm.change_lead'))
+class AddLeadGeneralTask(View):
+
+    def get(self, request, *args, **kwargs):
+        return HttpResponse(status=501)
+
+    def post(self, request, *args, **kwargs):
+        try:
+            lead = Lead.objects.get(id=int(kwargs['lead_id']))
+            general_task = SelectGeneralTaskForm(request.POST).get_general_task()
+            if general_task.lead is None:
+                general_task.lead = lead
+                general_task.save()
+            else:
+                msg = '%s already belongs to Lead <a href="' + \
+                reverse('view_lead', args=(general_task.lead.id,)) + \
+                '">%s.  Please remove it from that Lead before ' + \
+                'associating with this lead.' % (
+                    general_task.form_id, general_task.lead.title)
+                messages.error(request, msg)
+        except:
+            pass
+        finally:
+            return HttpResponseRedirect(request.GET.get('next', None) 
+                or reverse_lazy('view_lead', args=(lead.id,)))
+
+@cbv_decorator(permission_required('crm.change_lead'))
+class RemoveLeadGeneralTask(View):
+
+    def get(self, request, *args, **kwargs):
+        try:
+            lead = Lead.objects.get(id=int(kwargs['lead_id']))
+            general_task_id = request.GET.get('general_task_id')
+            general_task = GeneralTask.objects.get(id=int(general_task_id))
+            general_task.lead = None
+            general_task.save()
+        except:
+            print sys.exc_info(), traceback.format_exc()
+            pass
+        finally:
+            return HttpResponseRedirect(request.GET.get('next', None) 
+                or reverse_lazy('view_lead', args=(lead.id,)))
+
+
+@cbv_decorator(permission_required('crm.add_distinguishingvaluechallenge'))
+class AddDistinguishingValueChallenge(View):
+
+    def get(self, request, *args, **kwargs):
+        lead = Lead.objects.get(id=int(kwargs['lead_id']))
+        dvc = DistinguishingValueChallenge(lead=lead)
+        dvc.save()
+        url = '%s?tab=%d' % (
+            reverse('view_lead_distinguishing_value', args=(dvc.lead.id,)),
+            list(dvc.lead.distinguishingvaluechallenge_set.all()
+                ).index(dvc)+1)
+        return HttpResponseRedirect(url)
+
+@cbv_decorator(permission_required('crm.change_distinguishingvaluechallenge'))
+class UpdateDistinguishingValueChallenge(View):
+
+    def post(self, request, *args, **kwargs):
+        
+        dvc = DistinguishingValueChallenge.objects.get(id=int(request.POST.get('dvc', None)))
+        dvc.probing_question = request.POST.get('probing_question', '')
+        dvc.short_name = request.POST.get('short_name', '')
+        dvc.description = request.POST.get('description', '')
+        dvc.longevity = request.POST.get('longevity', '')
+        if request.POST.get('start_date', None):
+            try:
+                start_date = datetime.datetime.strptime(
+                    request.POST.get('start_date'), '%Y-%m-%d').date()
+                dvc.start_date = start_date
+            except:
+                dvc.start_date = None
+        else:
+            dvc.start_date = None
+        dvc.steps = request.POST.get('steps', '')
+        dvc.results = request.POST.get('results', '')
+        dvc.due = request.POST.get('due', '')
+        if request.POST.get('due_date', None):
+            try:
+                due_date = datetime.datetime.strptime(
+                    request.POST.get('due_date'), '%Y-%m-%d').date()
+                dvc.due_date = due_date
+            except:
+                dvc.due_date = None
+        else:
+            dvc.due_date = None
+        dvc.cost = request.POST.get('cost', '')
+        dvc.closed = True if request.POST.get('closed', 'off') == 'on' else False
+        dvc.save()
+
+        try:
+            order = int(request.POST.get('order', dvc.order))
+            order = max(order, 1)
+            if order != dvc.order:
+                counter = 1
+                for dvc2 in dvc.lead.distinguishingvaluechallenge_set.all():
+                    if counter == order:
+                        dvc.order = counter
+                        dvc.save()
+                        counter += 1
+                    if dvc2 != dvc:
+                        dvc2.order = counter
+                        dvc2.save()
+                        counter += 1
+        except:
+            pass
+        
+        url = '%s?tab=%d' % (
+            reverse('view_lead_distinguishing_value', args=(dvc.lead.id,)),
+            list(dvc.lead.distinguishingvaluechallenge_set.all()
+                ).index(dvc)+1)
+        return HttpResponseRedirect(url)
+
+@cbv_decorator(permission_required('crm.delete_distinguishingvaluechallenge'))
+class DeleteDistinguishingValueChallenge(DeleteView):
+    model = DistinguishingValueChallenge
+    pk_url_kwarg = 'dvc_id'
+    template_name = 'timepiece/delete_object.html'
+
+    def get_success_url(self):
+        return reverse('view_lead_distinguishing_value', 
+            args=(int(self.kwargs['lead_id']),))
+
+@cbv_decorator(permission_required('crm.add_distinguishingvaluechallenge'))
+class AddTemplateDifferentiatingValues(FormView):
+    form_class = AddTemplateDifferentiatingValuesForm
+    template_name = 'timepiece/lead/add_template_differentiating_value.html'
+
+    # def get_form(self, request):
+    #     form = super(AddTemplateDifferentiatingValues, self).get_form(request)
+    #     return form
+
+    def form_valid(self, form):
+        lead = Lead.objects.get(id=int(self.kwargs['lead_id']))
+        for template_dv_id in form.cleaned_data['template_dvs']:
+            template_dv = TemplateDifferentiatingValue.objects.get(
+                id=int(template_dv_id))
+            dv = DistinguishingValueChallenge(
+                lead=lead,
+                short_name=template_dv.short_name,
+                probing_question=template_dv.probing_question)
+            dv.save()
+
+        return super(AddTemplateDifferentiatingValues, self).form_valid(form)
+
+    def get_context_data(self, **kwargs):
+        context = super(AddTemplateDifferentiatingValues, self).get_context_data(**kwargs)
+        context['object'] = Lead.objects.get(id=int(self.kwargs.get('lead_id')))
+        return context
+
+    def get_success_url(self):
+        return reverse('view_lead_distinguishing_value', 
+            args=(int(self.kwargs['lead_id']),))
+
+
+@cbv_decorator(permission_required('auth.view_user'))
+class ListTemplateDifferentiatingValue(SearchListView, CSVViewMixin):
+    model = TemplateDifferentiatingValue
+    search_fields = ['probing_question__icontains', 'short_name__icontains']
+    template_name = 'timepiece/differentiating_value/list.html'
+
+    def get(self, request, *args, **kwargs):
+        self.export_template_dv_list = request.GET.get('export_template_dv_list', False)
+        if self.export_template_dv_list:
+            kls = CSVViewMixin
+
+            form_class = self.get_form_class()
+            self.form = self.get_form(form_class)
+            self.object_list = self.get_queryset()
+            self.object_list = self.filter_results(self.form, self.object_list)
+
+            allow_empty = self.get_allow_empty()
+            if not allow_empty and len(self.object_list) == 0:
+                raise Http404("No results found.")
+
+            context = self.get_context_data(form=self.form,
+                object_list=self.object_list)
+
+            return kls.render_to_response(self, context)
+        else:
+            return super(ListTemplateDifferentiatingValue, self).get(request, *args, **kwargs)
+
+    def get_filename(self, context):
+        request = self.request.GET.copy()
+        search = request.get('search', '(empty)')
+        return 'template_dv_search_{0}'.format(search)
+
+    def convert_context_to_csv(self, context):
+        """Convert the context dictionary into a CSV file."""
+        content = []
+        dv_list = context['object_list']
+        if self.export_template_dv_list:
+            headers = ['Short Name', 'Probing Question']
+            content.append(headers)
+            for dv in dv_list:
+                row = [dv.short_name, dv.probing_question]
+                print 'row', row
+                content.append(row)
+        return content
+
+@cbv_decorator(permission_required('crm.add_templatedifferentiatingvalue'))
+class CreateTemplateDifferentiatingValue(CreateView):
+    model = TemplateDifferentiatingValue
+    form_class = CreateEditTemplateDVForm
+    template_name = 'timepiece/differentiating_value/create_edit.html'
+
+    def get_success_url(self):
+        return reverse('list_template_differentiating_values')
+
+@cbv_decorator(permission_required('crm.change_templatedifferentiatingvalue'))
+class EditTemplateDifferentiatingValue(UpdateView):
+    model = TemplateDifferentiatingValue
+    pk_url_kwarg = 'template_dv_id'
+    form_class = CreateEditTemplateDVForm
+    template_name = 'timepiece/differentiating_value/create_edit.html'
+
+    def get_success_url(self):
+        return reverse('list_template_differentiating_values')
+
+@cbv_decorator(permission_required('crm.delete_templatedifferentiatingvalue'))
+class DeleteTemplateDifferentiatingValue(DeleteView):
+    model = TemplateDifferentiatingValue
+    pk_url_kwarg = 'template_dv_id'
+    template_name = 'timepiece/delete_object.html'
+
+    def get_success_url(self):
+        return reverse('list_template_differentiating_values')
+
+@cbv_decorator(permission_required('crm.add_templatedifferentiatingvalue'))
+class CreateDVCostItem(CreateView):
+    model = DVCostItem
+    form_class = CreateEditDVCostItem
+    template_name = 'timepiece/lead/cost_item/create_edit.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(CreateDVCostItem, self).get_context_data(**kwargs)
+        context['dv'] = DistinguishingValueChallenge.objects.get(
+            id=int(self.kwargs['dvc_id']))
+        return context
+
+    def get_form(self, *args, **kwargs):
+        form = super(CreateDVCostItem, self).get_form(*args, **kwargs)
+        form.fields['dv'].widget = widgets.HiddenInput()
+        form.fields['dv'].initial = DistinguishingValueChallenge.objects.get(
+            id=int(self.kwargs['dvc_id']))
+        return form
+
+    def form_valid(self, form):
+        form.instance.dv = DistinguishingValueChallenge.objects.get(
+            id=int(self.kwargs['dvc_id']))
+        return super(CreateDVCostItem, self).form_valid(form)
+
+    def get_success_url(self):
+        dvc = DistinguishingValueChallenge.objects.get(id=int(self.kwargs['dvc_id']))
+        return '%s?tab=%d#cost' % (
+            reverse('view_lead_distinguishing_value', args=(dvc.lead.id,)),
+            list(dvc.lead.distinguishingvaluechallenge_set.all()
+                ).index(dvc)+1)
+
+@cbv_decorator(permission_required('crm.change_templatedifferentiatingvalue'))
+class EditDVCostItem(UpdateView):
+    model = DVCostItem
+    pk_url_kwarg = 'cost_item_id'
+    form_class = CreateEditDVCostItem
+    template_name = 'timepiece/lead/cost_item/create_edit.html'
+
+    def get_context_data(self, **kwargs):
+        context = super(EditDVCostItem, self).get_context_data(**kwargs)
+        context['dv'] = DistinguishingValueChallenge.objects.get(
+            id=int(self.kwargs['dvc_id']))
+        return context
+
+    def get_form(self, *args, **kwargs):
+        form = super(EditDVCostItem, self).get_form(*args, **kwargs)
+        form.fields['dv'].widget = widgets.HiddenInput()
+        form.fields['dv'].initial = DistinguishingValueChallenge.objects.get(
+            id=int(self.kwargs['dvc_id']))
+        return form
+
+    def form_valid(self, form):
+        form.instance.dv = DistinguishingValueChallenge.objects.get(
+            id=int(self.kwargs['dvc_id']))
+        return super(EditDVCostItem, self).form_valid(form)
+
+    def get_success_url(self):
+        dvc = DistinguishingValueChallenge.objects.get(id=int(self.kwargs['dvc_id']))
+        return '%s?tab=%d#cost' % (
+            reverse('view_lead_distinguishing_value', args=(dvc.lead.id,)),
+            list(dvc.lead.distinguishingvaluechallenge_set.all()
+                ).index(dvc)+1)
+
+@cbv_decorator(permission_required('crm.delete_templatedifferentiatingvalue'))
+class DeleteDVCostItem(DeleteView):
+    model = DVCostItem
+    pk_url_kwarg = 'cost_item_id'
+    template_name = 'timepiece/delete_object.html'
+
+    def get_success_url(self):
+        dvc = DistinguishingValueChallenge.objects.get(id=int(self.kwargs['dvc_id']))
+        return '%s?tab=%d#cost' % (
+            reverse('view_lead_distinguishing_value', args=(dvc.lead.id,)),
+            list(dvc.lead.distinguishingvaluechallenge_set.all()
+                ).index(dvc)+1)
+
+@cbv_decorator(permission_required('crm.add_opportunity'))
+class CreateOpportunity(CreateView):
+    model = Opportunity
+    pk_url_kwarg = 'opportunity_id'
+    form_class = CreateEditOpportunity
+    template_name = 'timepiece/lead/opportunity/create_edit.html'
+
+    def get_success_url(self):
+        return reverse('view_lead_opportunities', args=(int(self.kwargs['lead_id']), ))
+
+    def get_form(self, *args, **kwargs):
+        form = super(CreateOpportunity, self).get_form(*args, **kwargs)
+        form.fields['proposal'].queryset = LeadAttachment.objects.filter(
+            lead__id=int(self.kwargs['lead_id']))
+        form.fields['differentiating_value'].queryset = \
+            DistinguishingValueChallenge.objects.filter(
+            lead__id=int(self.kwargs['lead_id']))
+        return form
+
+    def get_context_data(self, **kwargs):
+        context = super(CreateOpportunity, self).get_context_data(**kwargs)
+        context['lead'] = Lead.objects.get(id=int(self.kwargs['lead_id']))
+        return context
+
+    def get_initial(self):
+        return {
+            'lead': self.kwargs['lead_id'],
+            'differentiating_value': self.request.GET.get(
+                'differentiating_value', None),
+        }
+
+    def form_valid(self, form):
+        # form.instance.created_by = self.request.user
+        # form.instance.last_editor = self.request.user
+        return super(CreateOpportunity, self).form_valid(form)
+
+@cbv_decorator(permission_required('crm.change_opportunity'))
+class EditOpportunity(UpdateView):
+    model = Opportunity
+    pk_url_kwarg = 'opportunity_id'
+    form_class = CreateEditOpportunity
+    template_name = 'timepiece/lead/create_edit.html'
+
+    def get_form(self, *args, **kwargs):
+        form = super(EditOpportunity, self).get_form(*args, **kwargs)
+        form.fields['proposal'].queryset = LeadAttachment.objects.filter(
+            lead__id=int(self.kwargs['lead_id']))
+        form.fields['differentiating_value'].queryset = \
+            DistinguishingValueChallenge.objects.filter(
+            lead__id=int(self.kwargs['lead_id']))
+        return form
+
+    def get_context_data(self, **kwargs):
+        context = super(EditOpportunity, self).get_context_data(**kwargs)
+        context['lead'] = Lead.objects.get(id=int(self.kwargs['lead_id']))
+        return context
+
+    def form_valid(self, form):
+        # form.instance.last_editor = self.request.user
+        return super(EditOpportunity, self).form_valid(form)
+
+    def get_success_url(self):
+        return reverse('view_lead_opportunities',
+            args=(int(self.kwargs['lead_id']),))
+
+@cbv_decorator(permission_required('crm.delete_opportunity'))
+class DeleteOpportunity(DeleteView):
+    model = Opportunity
+    pk_url_kwarg = 'opportunity_id'
+    template_name = 'timepiece/delete_object.html'
+
+    def get_success_url(self):
+        return reverse('view_lead_opportunities',
+            args=(int(self.kwargs['lead_id']),))
+
+
+@csrf_exempt
+# @permission_required('project.add_projectattachment')
+def project_s3_attachment(request, project_id):
+    bucket = request.POST.get('bucket', None)
+    uuid = request.POST.get('key', None)
+    userid = int(request.POST.get('firmbase-userid', 4))
+    filename = request.POST.get('name', '')
+
+    attachment = ProjectAttachment(
+        project=Project.objects.get(id=int(project_id)),
+        bucket=bucket,
+        uuid=uuid,
+        filename=filename,
+        uploader=User.objects.get(id=userid))
+    attachment.save()
+
+    return HttpResponse(status=200)
+
+@permission_required('crm.view_projectattachment')
+def project_download_attachment(request, project_id, attachment_id):
+    try:
+        project_attachment = ProjectAttachment.objects.get(
+            project_id=project_id, id=attachment_id)
+        return HttpResponseRedirect(project_attachment.get_download_url())
+    except:
+        return HttpResponse('Project attachment could not be found.')
