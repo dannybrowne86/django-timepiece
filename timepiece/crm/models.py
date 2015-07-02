@@ -782,7 +782,7 @@ class TrackableProjectManager(models.Manager):
 
 
 class Project(models.Model):
-    MINDERS_GROUP_ID = 3
+    MINDERS_GROUP_ID = 1
 
     name = models.CharField(max_length=255)
     code = models.CharField(max_length=12,
@@ -827,7 +827,8 @@ class Project(models.Model):
     year = models.SmallIntegerField(blank=True, null=True) # this field is required, but is taken care of in code
 
     objects = models.Manager()
-    trackable = TrackableProjectManager()
+    trackable = models.Manager()
+    #trackable = TrackableProjectManager()
 
     class Meta:
         db_table = 'timepiece_project'  # Using legacy table name.
