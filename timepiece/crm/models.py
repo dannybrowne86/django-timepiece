@@ -434,7 +434,7 @@ class Business(models.Model):
               ('WY', 'Wyoming'))
 
     name = models.CharField(max_length=255)
-    short_name = models.CharField(max_length=3, blank=True, unique=True)
+    short_name = models.CharField(max_length=4, blank=True, unique=True)
     #email = models.EmailField(blank=True)
     poc = models.ForeignKey(User, related_name='business_poc_old', verbose_name='Old Primary Contact (User)', blank=True, null=True)
     primary_contact = models.ForeignKey('Contact', related_name='business_poc', verbose_name='Primary Contact', blank=True, null=True)
