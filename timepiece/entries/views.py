@@ -40,7 +40,7 @@ class Dashboard(TemplateView):
 
     @method_decorator(login_required)
     def dispatch(self, request, active_tab, *args, **kwargs):
-        if request.user.profile.business.id == 6:
+        if request.user.profile.business.id == 1:
             self.active_tab = active_tab or 'progress'
             self.user = request.user
             return super(Dashboard, self).dispatch(request, *args, **kwargs)
@@ -390,7 +390,7 @@ def writedown_entry(request, orig_entry_id):
                           location=orig_entry.location,
                           entry_group=orig_entry.entry_group,
                           mechanism=Entry.WRITEDOWN,
-                          status=Entry.APPROVED)
+                          status=Entry.UNVERIFIED)
             entry.save()
             message = 'The writeoff has been successfully created.'
             messages.info(request, message)
