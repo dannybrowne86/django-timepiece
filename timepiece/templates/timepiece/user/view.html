@@ -97,7 +97,7 @@
                         {% endif %}
                     </td>
                 </tr>
-                {% if request.user.id == user_id or perms.crm.can_view_limited_profile %}
+                {% if request.user.id == user_id or perms.crm.view_limited_profile %}
                 <tr class="info"><td colspan=2><p class="text-center"><strong>Travel Preferences</strong></p></td></tr>
                 <tr><th>Seating</th><td>{{ object.profile.limited.seating }}</td></tr>
                 <tr><th>Rental Car / Shuttle / Taxi</th><td>{{ object.profile.limited.ground_transportation }}</td></tr>

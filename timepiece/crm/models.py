@@ -282,7 +282,7 @@ class LimitedAccessUserProfile(models.Model):
 
     class Meta:
         permissions = (
-            ('can_view_limited_profile', 'Can view limited user profile'),
+            ('view_limited_profile', 'Can view limited user profile'),
         )
 
 
@@ -318,8 +318,8 @@ class PaidTimeOffRequest(models.Model):
     class Meta:
         ordering = ('user_profile', '-pto_start_date',)
         permissions = (
-            ("can_approve_pto_requests", "Can approve PTO requests"),
-            ("can_process_pto_requests", "Can payroll process PTO requests"),
+            ("approve_pto_requests", "Can approve PTO requests"),
+            ("process_pto_requests", "Can payroll process PTO requests"),
         )
 
     def __unicode__(self):
