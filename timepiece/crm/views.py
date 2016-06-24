@@ -1298,7 +1298,7 @@ def pto_home(request, active_tab='summary'):
     data['user_profile'] = UserProfile.objects.get(user=request.user)
     data['pto_requests'] = PaidTimeOffRequest.objects.filter(user_profile=data['user_profile']).order_by('-pto_start_date')
     data['pto_log'] = PaidTimeOffLog.objects.filter(user_profile=data['user_profile'])
-    if request.user.has_perm('crm.approve_pto_requests') or request.user.has_perm('crm.process_pto_requests'):
+    if request.user.has_perm('crm.approve_pto_request') or request.user.has_perm('crm.process_pto_request'):
         data['pto_approvals'] = PaidTimeOffRequest.objects.filter(Q(status=PaidTimeOffRequest.PENDING) | Q(status=PaidTimeOffRequest.APPROVED) | Q(status=PaidTimeOffRequest.MODIFIED))
         data['pto_all_history'] = PaidTimeOffLog.objects.filter(pto=True).order_by('user_profile', '-date')
         data['upto_all_history'] = PaidTimeOffLog.objects.filter(pto=False).order_by('user_profile', '-date')
@@ -1406,7 +1406,7 @@ class DeletePTORequest(DeleteView):
     template_name = 'timepiece/delete_object.html'
 
 
-@cbv_decorator(permission_required('crm.approve_pto_requests'))
+@cbv_decorator(permission_required('crm.approve_pto_request'))
 class ApprovePTORequest(UpdateView):
     model = PaidTimeOffRequest
     form_class = ApproveDenyPTORequestForm
@@ -1492,7 +1492,7 @@ class ApprovePTORequest(UpdateView):
         return super(ApprovePTORequest, self).form_valid(form)
 
 
-@cbv_decorator(permission_required('crm.approve_pto_requests'))
+@cbv_decorator(permission_required('crm.approve_pto_request'))
 class DenyPTORequest(UpdateView):
     model = PaidTimeOffRequest
     form_class = ApproveDenyPTORequestForm
@@ -1510,7 +1510,7 @@ class DenyPTORequest(UpdateView):
         return super(DenyPTORequest, self).form_valid(form)
 
 
-@cbv_decorator(permission_required('crm.process_pto_requests'))
+@cbv_decorator(permission_required('crm.process_pto_request'))
 class ProcessPTORequest(UpdateView):
     model = PaidTimeOffRequest
     form_class = ApproveDenyPTORequestForm

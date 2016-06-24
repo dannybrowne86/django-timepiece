@@ -318,8 +318,8 @@ class PaidTimeOffRequest(models.Model):
     class Meta:
         ordering = ('user_profile', '-pto_start_date',)
         permissions = (
-            ("approve_pto_requests", "Can approve PTO requests"),
-            ("process_pto_requests", "Can payroll process PTO requests"),
+            ("approve_pto_request", "Can approve PTO requests"),
+            ("process_pto_request", "Can payroll process PTO requests"),
         )
 
     def __unicode__(self):
