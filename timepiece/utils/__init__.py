@@ -78,7 +78,7 @@ def get_hours_summary(entries):
 def get_last_billable_day(day=None):
     day = day or datetime.date.today()
     day += relativedelta(months=1)
-    return get_week_start(get_month_start(day)) - relativedelta(days=1)
+    return get_month_start(day) - relativedelta(days=1)
 
 
 def get_month_start(day=None):
