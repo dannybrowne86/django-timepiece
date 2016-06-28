@@ -32,6 +32,10 @@
 
                 <li><a href="{% url 'report_estimation_accuracy' %}">Estimation Accuracy</a></li>
 
+                {% if perms.crm.view_throughput_report %}
+                <li><a href="{% url 'report_throughput' %}">Throughput Report</a></li>
+                {% endif %}
+
                 {% if user.is_staff or perms.contracts.change_entrygroup or perms.entries.can_clock_in %}
                     <li class="divider"></li>
                 {% endif %}

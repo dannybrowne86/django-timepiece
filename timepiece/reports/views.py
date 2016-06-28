@@ -2195,7 +2195,7 @@ def active_projects_burnup_charts(request, minder_id=-1):
                'project_ids': project_ids}
     return render(request, 'timepiece/reports/active_projects_burnup_charts.html', context)
 
-
+@cbv_decorator(permission_required('crm.approve_milestone'))
 class PendingMilestonesReport(TemplateView):
     template_name = 'timepiece/reports/milestones.html'
 
@@ -2211,7 +2211,7 @@ class PendingMilestonesReport(TemplateView):
         context['pending_milestones'] = pending_milestones
         return context
 
-#TODO
+@cbv_decorator(permission_required('crm.view_throughput_report'))
 class ThroughputReport(CSVViewMixin, TemplateView):
     template_name = 'timepiece/reports/throughput.html'
 

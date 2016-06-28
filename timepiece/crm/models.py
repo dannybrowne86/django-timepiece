@@ -281,7 +281,9 @@ class LimitedAccessUserProfile(models.Model):
     hobbies = models.TextField(blank=True)
 
     class Meta:
-        permissions = (('can_view_limited_profile', 'Can view limited user profile'))
+        permissions = (
+            ('view_limited_profile', 'Can view limited user profile'),
+        )
 
 
 class PaidTimeOffRequest(models.Model):
@@ -315,8 +317,10 @@ class PaidTimeOffRequest(models.Model):
 
     class Meta:
         ordering = ('user_profile', '-pto_start_date',)
-        permissions = (("can_approve_pto_requests", "Can approve PTO requests"),
-                       ("can_process_pto_requests", "Can payroll process PTO requests"), )
+        permissions = (
+            ("approve_pto_request", "Can approve PTO requests"),
+            ("process_pto_request", "Can payroll process PTO requests"),
+        )
 
     def __unicode__(self):
         return '%s %s to %s %s (%s)' % (self.user_profile, str(self.pto_start_date), str(self.pto_end_date), str(self.amount), str(self.approver) if self.approver else 'not approved')
@@ -1094,6 +1098,7 @@ class Project(models.Model):
             ('view_project_time_sheet', 'Can view project time sheet'),
             ('export_project_time_sheet', 'Can export project time sheet'),
             ('generate_project_invoice', 'Can generate project invoice'),
+            ('view_throughput_report', 'Can view project throughput report'),
         )
 
     def __str__(self):
@@ -1250,7 +1255,9 @@ class Milestone(models.Model):
 
     class Meta:
         ordering = ('due_date', 'name')
-        permissions = (('approve_milestone', 'Can approve milestone'),)
+        permissions = (
+            ('approve_milestone', 'Can approve milestone'),
+        )
 
     @property
     def approved(self):
