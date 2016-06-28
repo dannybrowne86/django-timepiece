@@ -149,7 +149,7 @@ class TimeTagTestCase(TestCase):
 
     def test_week_start(self):
         start = tags.week_start(datetime.date(2013, 1, 10))
-        self.assertEqual(start.date(), datetime.date(2013, 1, 7))
+        self.assertEqual(start.date(), datetime.date(2013, 1, 6))
 
 
 class MiscTagTestCase(TestCase):
@@ -194,7 +194,7 @@ class MiscTagTestCase(TestCase):
             'to_date': '2013-01-10',
             'billable': 1,
             'non_billable': 0,
-            'paid_leave': 0,
+            'paid_time_off': 0,
             'trunc': 'month',
             'projects_1': project.id,
         }
