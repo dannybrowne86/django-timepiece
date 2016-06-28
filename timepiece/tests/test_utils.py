@@ -13,12 +13,12 @@ class UtilityFunctionsTest(TestCase):
     def setUp(self):
         # Setup last billable days
         self.last_billable = [
-            utils.add_timezone(datetime.datetime(2012, 3, 25)),
-            utils.add_timezone(datetime.datetime(2012, 4, 29)),
-            utils.add_timezone(datetime.datetime(2012, 5, 27)),
-            utils.add_timezone(datetime.datetime(2012, 6, 24)),
-            utils.add_timezone(datetime.datetime(2012, 7, 29)),
-            utils.add_timezone(datetime.datetime(2012, 8, 26)),
+            utils.add_timezone(datetime.datetime(2012, 3, 31)),
+            utils.add_timezone(datetime.datetime(2012, 4, 30)),
+            utils.add_timezone(datetime.datetime(2012, 5, 31)),
+            utils.add_timezone(datetime.datetime(2012, 6, 30)),
+            utils.add_timezone(datetime.datetime(2012, 7, 31)),
+            utils.add_timezone(datetime.datetime(2012, 8, 31)),
         ]
         self.dates = [
             utils.add_timezone(datetime.datetime(2012, 3, 12)),
