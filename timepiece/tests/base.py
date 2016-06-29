@@ -24,7 +24,7 @@ class ViewTestMixin(object):
     get_kwargs = {}
     post_data = {}
 
-    login_url = reverse_lazy('auth_login')
+    login_url = reverse_lazy('login_page')
 
     def _url(self, url_name=None, url_args=None, url_kwargs=None,
              get_kwargs=None):
