@@ -6,6 +6,22 @@
             <div class="span12">
                 <h2>Reports</h2>
                 <ul class="nav nav-pills">
+                    {% if perms.crm.view_backlog %}
+                        <li{% ifequal active 'active_projects_burnup_charts' %} class="active"{% endifequal %}>
+                            <a href="{% ifequal active 'active_projects_burnup_charts' %}#{% else %}{% url 'report_active_projects_burnup_charts' %}{% endifequal %}">Active Project Burnup Charts</a>
+                        </li>
+                        <li{% ifequal active 'activity_goals_overrun' %} class="active"{% endifequal %}>
+                            <a href="{% url 'report_overrun_backlog' %}">Activity Goals Overrun</a>
+                        </li>
+                    {% endif %}
+                    {% if perms.crm.view_employee_backlog %}
+                        <li{% ifequal active 'backlog' %} class="active"{% endifequal %}>
+                            <a href="{% url 'report_backlog' %}">Backlog</a>
+                        </li>
+                        <li{% ifequal active 'backlog_all' %} class="active"{% endifequal %}>
+                            <a href="{% url 'report_all_employee_backlog' %}">Backlog Charts</a>
+                        </li>
+                    {% endif %}
                     {% if perms.entries.view_entry_summary %}
                         <li{% ifequal active 'billable_hours' %} class="active"{% endifequal %}>
                             <a href="{% ifequal active 'billable_hours' %}#{% else %}{% url 'report_billable_hours' %}{% endifequal %}">Billable Hours</a>
@@ -25,29 +41,19 @@
                             <a href="{% ifequal active 'productivity_report' %}#{% else %}{% url 'report_productivity' %}{% endifequal %}">Productivity</a>
                         </li>
                     {% endif %}
-                    {% if perms.contracts.view_estimation_accuracy %}
-                        <!--li{% ifequal active 'estimation_accuracy' %} class="active"{% endifequal %}>
-                            <a href="{% ifequal active 'estimation_accuracy' %}#{% else %}{% url 'report_estimation_accuracy' %}{% endifequal %}">Estimation Accuracy</a>
-                        </li-->
-                    {% endif %}
-                    {% if perms.crm.view_employee_backlog %}
-                        <li{% ifequal active 'backlog' %} class="active"{% endifequal %}>
-                            <a href="{% url 'report_backlog' %}">Backlog</a>
-                        </li>
-                    {% endif %}
-                    {% if perms.crm.view_backlog %}
-                        <li{% ifequal active 'activity_goals_overrun' %} class="active"{% endifequal %}>
-                            <a href="{% url 'report_overrun_backlog' %}">Activity Goals Overrun</a>
-                        </li>
-                    {% endif %}
-                    {% if perms.crm.view_backlog %}
-                        <li{% ifequal active 'active_projects_burnup_charts' %} class="active"{% endifequal %}>
-                            <a href="{% ifequal active 'active_projects_burnup_charts' %}#{% else %}{% url 'report_active_projects_burnup_charts' %}{% endifequal %}">Active Project Burnup Charts</a>
-                        </li>
-                    {% endif %}
                     {% if perms.crm.view_user_revenue_report %}
                         <li{% ifequal active 'revenue_report' %} class="active"{% endifequal %}>
                             <a href="{% ifequal active 'revenue_report' %}#{% else %}{% url 'report_revenue' %}{% endifequal %}">Revenue Report</a>
+                        </li>
+                    {% endif %}
+                    {% if perms.contracts.view_estimation_accuracy %}
+                        <li{% ifequal active 'estimation_accuracy' %} class="active"{% endifequal %}>
+                            <a href="{% ifequal active 'estimation_accuracy' %}#{% else %}{% url 'report_estimation_accuracy' %}{% endifequal %}">Estimation Accuracy</a>
+                        </li>
+                    {% endif %}
+                    {% if perms.crm.view_throughput_report %}
+                        <li{% ifequal active 'throughput' %} class="active"{% endifequal %}>
+                            <a href="{% ifequal active 'throughput' %}#{% else %}{% url 'report_throughput' %}{% endifequal %}">Throughput</a>
                         </li>
                     {% endif %}
                     {% if perms.crm.approve_milestone %}
@@ -55,9 +61,6 @@
                             <a href="{% ifequal active 'pending_milestones' %}#{% else %}{% url 'report_pending_milestones' %}{% endifequal %}">Pending Milestones</a>
                         </li>
                     {% endif %}
-                    <li{% ifequal active 'throughput' %} class="active"{% endifequal %}>
-                        <a href="{% ifequal active 'throughput' %}#{% else %}{% url 'report_throughput' %}{% endifequal %}">Throughput</a>
-                    </li>
                 </ul>
             </div>
         </div>

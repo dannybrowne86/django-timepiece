@@ -1,44 +1,40 @@
 {% load timepiece_tags %}
 
-{# FIXME: Some of those permissions don't exist #}
 {% if perms.entries.can_clock_in or perms.entries.view_entry_summary or perms.entries.view_payroll_summary or perms.contracts.change_entrygroup or user.is_staff %}
     <li class="dropdown">
         <a href="#" class="dropdown-toggle" data-toggle="dropdown">Management <b class="caret"></b></a>
         <ul class="dropdown-menu">
-            {% if perms.entries.view_payroll_summary %}
-                {% if perms.crm.view_backlog %}
+            
+            {% if perms.crm.view_backlog %}
                 <li><a href="{% url 'report_active_projects_burnup_charts' %}">Active Projects Burnup Charts</a></li>
                 <li><a href="{% url 'report_overrun_backlog' %}">Activity Goals Overrun</a></li>
+            {% endif %}
+            {% if perms.crm.view_employee_backlog %}
                 <li><a href="{% url 'report_backlog' %}">Backlog</a></li>
                 <li><a href="{% url 'report_all_employee_backlog' %}">Backlog Charts</a></li>
-                {% endif %}
             {% endif %}
-
-            {% if perms.entries.view_entry_summary %}  {# FIXME: permission doesn't exist #}
+            {% if perms.entries.view_entry_summary %}
                 <li><a href="{% url 'report_billable_hours' %}">Billable Hours</a></li>
-            {% endif %}
-
-            {% if perms.entries.view_entry_summary %}  {# FIXME: permission doesn't exist #}
                 <li><a href="{% url 'report_hourly' %}">Hourly</a></li>
+                <li><a href="{% url 'report_writedowns' %}">Writedowns</a></li>
             {% endif %}
 
             {% if perms.entries.view_payroll_summary %}
                 <li><a href="{% url 'report_payroll_summary' %}">Payroll Summary</a></li>
                 <li><a href="{% url 'report_productivity' %}">Productivity</a></li>
-
-                {% if perms.crm.view_user_revenue_report %}
+            {% endif %}
+            {% if perms.crm.view_user_revenue_report %}
                 <li><a href="{% url 'report_revenue' %}">Revenue Report</a></li>
-                {% endif %}
-
+            {% endif %}
+            {% if perms.crm.view_estimation_accuracy %}
                 <li><a href="{% url 'report_estimation_accuracy' %}">Estimation Accuracy</a></li>
-
-                {% if perms.crm.view_throughput_report %}
+            {% endif %}
+            {% if perms.crm.view_throughput_report %}
                 <li><a href="{% url 'report_throughput' %}">Throughput Report</a></li>
-                {% endif %}
+            {% endif %}
 
-                {% if user.is_staff or perms.contracts.change_entrygroup or perms.entries.can_clock_in %}
-                    <li class="divider"></li>
-                {% endif %}
+            {% if user.is_staff or perms.contracts.change_entrygroup or perms.entries.can_clock_in %}
+                <li class="divider"></li>
             {% endif %}
 
             {% if user.is_staff %}
