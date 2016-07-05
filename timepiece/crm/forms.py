@@ -135,6 +135,30 @@ class CreateProjectForm(forms.ModelForm):
                     self._errors['client_primary_poc'] = self.error_class(
                         ['You must select a Contact that belongs to the selected Company.'])
 
+            target_internal_completion_date = cleaned_data.get('target_internal_completion_date')
+            required_completion_date = cleaned_data.get('required_completion_date')
+            target_open_date = cleaned_data.get('target_open_date')
+            start_date = cleaned_data.get('start_date')
+            turn_in_date = cleaned_data.get('turn_in_date')
+
+            if start_date:
+                if target_internal_completion_date and target_internal_completion_date < start_date:
+                    self._errors['target_internal_completion_date'] = self.error_class(
+                        ['Internal target completion date date must occur after or on the start date.'])
+
+                if required_completion_date and required_completion_date < start_date:
+                    self._errors['required_completion_date'] = self.error_class(
+                        ['Required completion date date must occur after or on the start date.'])
+
+                if turn_in_date and turn_in_date < start_date:
+                    self._errors['turn_in_date'] = self.error_class(
+                        ['Turn-in date must occur after or on the start date.'])
+
+            if target_open_date and turn_in_date:
+                if target_open_date < turn_in_date:
+                    self._errors['target_open_date'] = self.error_class(
+                        ['Target open date must occur after or on the turn-in date.'])
+
             return cleaned_data
 
     def save(self):

@@ -2241,12 +2241,11 @@ class ThroughputReport(CSVViewMixin, TemplateView):
                 turn_in_date = milestones.get(name='Turn-In')
                 required_completion_date = milestones.get(
                     name='Required Completion')
-                required_time = (required_completion_date.due_date -
-                    start_date.due_date) + datetime.timedelta(days=1)
-                spent_time =  (turn_in_date.due_date -
-                    start_date.due_date) + datetime.timedelta(days=1)
+                required_time = (required_completion_date.due_date - 
+                                 start_date.due_date)
+                spent_time = (turn_in_date.due_date - start_date.due_date)
                 throughput = "%.2f" % (spent_time.days / (
-                    1.0*required_time.days))
+                    1.0 + required_time.days))
                 minder = project.point_person.get_full_name()
 
                 # if start_date and turn_in_date and required_completion_date:
