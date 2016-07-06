@@ -119,47 +119,45 @@ class CreateProjectForm(forms.ModelForm):
                     'first_name')
 
     def clean(self):
-            cleaned_data = super(CreateProjectForm, self).clean()
+        cleaned_data = super(CreateProjectForm, self).clean()
 
-            biz = cleaned_data.get('business', None)
-            biz_dept = cleaned_data.get('business_department', None)
-            client_contact = cleaned_data.get('client_primary_poc', None)
+        biz = cleaned_data.get('business')
+        biz_dept = cleaned_data.get('business_department')
+        client_contact = cleaned_data.get('client_primary_poc')
 
-            if biz_dept and biz_dept.business != biz:
-                self._errors['business_department'] = self.error_class(
-                    ['Selected Company Department does not belong to selected Company.'])
+        if biz_dept and biz_dept.business != biz:
+            self.add_error('business_department',
+                           'Selected Company Department does not belong to selected Company.')
 
-            if client_contact:
-                client_biz = client_contact.user.profile.business if client_contact.user else client_contact.business
-                if client_biz != biz:
-                    self._errors['client_primary_poc'] = self.error_class(
-                        ['You must select a Contact that belongs to the selected Company.'])
+        if client_contact:
+            client_biz = client_contact.user.profile.business if client_contact.user else client_contact.business
+            if client_biz != biz:
+                self.add_error('client_primary_poc',
+                               'You must select a Contact that belongs to the selected Company.')
 
-            target_internal_completion_date = cleaned_data.get('target_internal_completion_date')
-            required_completion_date = cleaned_data.get('required_completion_date')
-            target_open_date = cleaned_data.get('target_open_date')
-            start_date = cleaned_data.get('start_date')
-            turn_in_date = cleaned_data.get('turn_in_date')
+        target_internal_completion_date = cleaned_data.get('target_internal_completion_date')
+        required_completion_date = cleaned_data.get('required_completion_date')
+        target_open_date = cleaned_data.get('target_open_date')
+        start_date = cleaned_data.get('start_date')
+        turn_in_date = cleaned_data.get('turn_in_date')
 
-            if start_date:
-                if target_internal_completion_date and target_internal_completion_date < start_date:
-                    self._errors['target_internal_completion_date'] = self.error_class(
-                        ['Internal target completion date date must occur after or on the start date.'])
+        if start_date:
+            if target_internal_completion_date and target_internal_completion_date < start_date:
+                self.add_error('target_internal_completion_date',
+                               'Internal target completion date date must occur after or on the start date.')
 
-                if required_completion_date and required_completion_date < start_date:
-                    self._errors['required_completion_date'] = self.error_class(
-                        ['Required completion date date must occur after or on the start date.'])
+            if required_completion_date and required_completion_date < start_date:
+                self.add_error('required_completion_date',
+                               'Required completion date date must occur after or on the start date.')
 
-                if turn_in_date and turn_in_date < start_date:
-                    self._errors['turn_in_date'] = self.error_class(
-                        ['Turn-in date must occur after or on the start date.'])
+            if turn_in_date and turn_in_date < start_date:
+                self.add_error('turn_in_date',
+                               'Turn-in date must occur after or on the start date.')
 
-            if target_open_date and turn_in_date:
-                if target_open_date < turn_in_date:
-                    self._errors['target_open_date'] = self.error_class(
-                        ['Target open date must occur after or on the turn-in date.'])
-
-            return cleaned_data
+        if target_open_date and turn_in_date:
+            if target_open_date < turn_in_date:
+                self.add_error('target_open_date',
+                               'Target open date must occur after or on the turn-in date.')
 
     def save(self):
         project = super(CreateProjectForm, self).save()
