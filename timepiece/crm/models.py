@@ -5,12 +5,14 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.core.urlresolvers import reverse
 from django.db import models
 from django.db.models import get_model, Sum, Q
+from guardian.shortcuts import get_objects_for_user
 import datetime
 import sys, traceback
 from decimal import Decimal
 from itertools import groupby
 from timepiece.utils import get_active_entry, get_setting
 from timepiece.models import AwsAttachment
+from timepiece.reports.models import Report
 
 
 from collections import OrderedDict
@@ -113,6 +115,13 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return str(self.user)
+
+    def reports(self):
+        return get_objects_for_user(
+            self.user,
+            'reports.view_report',
+            klass=Report.objects.filter(nav_option=True),
+            use_groups=True)
 
     @property
     def week_schedule(self):
