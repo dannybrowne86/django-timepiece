@@ -1025,7 +1025,7 @@ def toggle_pause_entry(request):
 
 @login_required
 def get_verification_information(request):
-    (period_start, period_end) = utils.get_last_bimonthly_dates()
+    (period_start, period_end) = utils.get_last_bimonthly_dates(datetime.date.today())
     entries_count = request.user.timepiece_entries.filter(
         Q(status=Entry.UNVERIFIED),
         start_time__gte=period_start,
